@@ -32,11 +32,11 @@ async def create_user_from_telegram(
 ) -> dict[str, Any]:
     display_name = " ".join(filter(None, [tg_user.first_name, tg_user.last_name])) or None
     payload = {
-        "telegram_id":  tg_user.id,
-        "username":     tg_user.username,
+        "telegram_id": tg_user.id,
+        "username": tg_user.username,
         "display_name": display_name,
-        "avatar_url":   tg_user.photo_url,
-        "language":     tg_user.language_code or "uk",
+        "avatar_url": tg_user.photo_url,
+        "language": tg_user.language_code or "uk",
         "auth_provider": "telegram",
     }
     return await client.create_item(settings.directus_users_collection, payload)
@@ -56,7 +56,7 @@ async def update_user_from_telegram(
         payload["username"] = tg_user.username
     if payload:
         return await client.update_item(settings.directus_users_collection, user_id, payload)
-    # Повертаємо поточного юзера без змін
+
     items = await client.get_items(
         settings.directus_users_collection,
         filter_={"id": {"_eq": user_id}},
@@ -69,9 +69,27 @@ async def create_user_from_google(
     client: DirectusClient, google_user: GoogleUser
 ) -> dict[str, Any]:
     payload = {
-        "google_sub":   google_user.sub,
+        "google_sub": google_user.sub,
         "display_name": google_user.name,
-        "avatar_url":   google_user.picture,
+        "avatar_url": google_user.picture,
         "auth_provider": "google",
     }
     return await client.create_item(settings.directus_users_collection, payload)
+
+
+async def update_user_from_google(
+    client: DirectusClient, user_id: str, google_user: GoogleUser
+) -> dict[str, Any]:
+    """Синхронізує ім'я та аватар Google при повторному вході."""
+    payload: dict[str, Any] = {}
+    if google_user.name:
+        payload["display_name"] = google_user.name
+    if google_user.picture:
+        payload["avatar_url"] = google_user.picture
+    payload["auth_provider"] = "google"
+
+    return await client.update_item(
+        settings.directus_users_collection,
+        user_id,
+        payload,
+    )

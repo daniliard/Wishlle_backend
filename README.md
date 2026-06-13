@@ -94,3 +94,9 @@ TELEGRAM_REDIRECT_URI=https://wishlle-4isp.vercel.app/auth/callback
 
 Redirect URI має повністю збігатися з URL у BotFather та `VITE_TG_REDIRECT_URI` фронтенду.
 Поточна версія перевіряє `id_token` через офіційний JWKS endpoint Telegram, issuer та audience.
+
+## Google authentication
+
+Endpoint `POST /api/auth/google` приймає Google ID token, перевіряє його офіційною бібліотекою `google-auth` і створює або завантажує користувача за `google_sub`.
+
+Детальне налаштування: `GOOGLE_AUTH_SETUP.md`.

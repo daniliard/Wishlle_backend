@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import json
@@ -6,13 +7,15 @@ from urllib.parse import parse_qsl
 
 import httpx
 import jwt
+from google.auth.exceptions import GoogleAuthError
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 from jwt import PyJWKClient
 
 from app.auth.schemas import GoogleUser, TelegramUser
 from app.core.config import settings
 
 
-GOOGLE_JWKS_URL   = "https://www.googleapis.com/oauth2/v3/certs"
 GOOGLE_ISSUERS    = {"https://accounts.google.com", "accounts.google.com"}
 TELEGRAM_AUTH_MAX_AGE = timedelta(hours=24)
 
@@ -100,35 +103,31 @@ def verify_telegram_init_data(init_data: str) -> TelegramUser:
 
 
 async def verify_google_id_token(id_token: str) -> GoogleUser:
+    """Перевіряє Google ID token офіційною бібліотекою google-auth."""
     if not settings.google_client_id:
         raise AuthError("Google auth is not configured")
 
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            jwks_response = await client.get(GOOGLE_JWKS_URL)
-            jwks_response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise AuthError(f"Failed to fetch Google JWKS: {exc}") from exc
-
-    jwks_client = PyJWKClient(GOOGLE_JWKS_URL)
-    try:
-        signing_key = jwks_client.get_signing_key_from_jwt(id_token).key
-        payload = jwt.decode(
+        payload = await asyncio.to_thread(
+            google_id_token.verify_oauth2_token,
             id_token,
-            signing_key,
-            algorithms=["RS256"],
-            audience=settings.google_client_id,
-            options={"verify_exp": True},
+            google_requests.Request(),
+            settings.google_client_id,
         )
-    except jwt.PyJWTError as exc:
+    except (ValueError, GoogleAuthError) as exc:
         raise AuthError(f"Invalid Google id_token: {exc}") from exc
 
     if payload.get("iss") not in GOOGLE_ISSUERS:
-        raise AuthError("Invalid token issuer")
+        raise AuthError("Invalid Google token issuer")
+
+    google_sub = payload.get("sub")
+    if not google_sub:
+        raise AuthError("Google token missing subject")
 
     return GoogleUser(
-        sub=payload["sub"],
+        sub=str(google_sub),
         email=payload.get("email"),
+        email_verified=payload.get("email_verified"),
         name=payload.get("name"),
         picture=payload.get("picture"),
     )

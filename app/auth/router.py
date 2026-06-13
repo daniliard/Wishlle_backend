@@ -9,6 +9,7 @@ from app.auth.repository import (
     create_user_from_telegram,
     find_user_by_google_sub,
     find_user_by_telegram_id,
+    update_user_from_google,
     update_user_from_telegram,
 )
 from app.auth.schemas import (
@@ -141,6 +142,8 @@ async def google_login(payload: GoogleAuthRequest) -> AuthResponse:
     user = await find_user_by_google_sub(client, google_user.sub)
     if user is None:
         user = await create_user_from_google(client, google_user)
+    else:
+        user = await update_user_from_google(client, str(user["id"]), google_user)
 
     user_id = str(user["id"])
     return AuthResponse(
