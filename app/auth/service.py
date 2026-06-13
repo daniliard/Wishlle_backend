@@ -12,8 +12,8 @@ from app.auth.schemas import GoogleUser, TelegramUser
 from app.core.config import settings
 
 
-GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
-GOOGLE_ISSUERS = {"https://accounts.google.com", "accounts.google.com"}
+GOOGLE_JWKS_URL   = "https://www.googleapis.com/oauth2/v3/certs"
+GOOGLE_ISSUERS    = {"https://accounts.google.com", "accounts.google.com"}
 TELEGRAM_AUTH_MAX_AGE = timedelta(hours=24)
 
 
@@ -21,16 +21,37 @@ class AuthError(Exception):
     pass
 
 
+def _compute_telegram_hash(parsed: dict, secret_key: bytes) -> str:
+    """Обчислює HMAC-SHA256 для набору полів Telegram."""
+    data_check_string = "\n".join(
+        f"{k}={v}" for k, v in sorted(parsed.items())
+    )
+    return hmac.new(
+        key=secret_key,
+        msg=data_check_string.encode(),
+        digestmod=hashlib.sha256,
+    ).hexdigest()
+
+
 def verify_telegram_init_data(init_data: str) -> TelegramUser:
+    """
+    Підтримує два формати:
+
+    1. Mini App initData (Telegram WebApp SDK):
+       user={"id":123,"first_name":"Dan",...}&auth_date=...&hash=...
+
+    2. Telegram Login Widget:
+       user={"id":123,"first_name":"Dan",...}&auth_date=...&hash=...
+       (той самий формат — ми самі пакуємо на фронті)
+
+    Якщо поле `user` є — парсимо його як JSON.
+    Якщо ні — поля id/first_name/... лежать прямо в рядку (legacy).
+    """
     parsed = dict(parse_qsl(init_data, keep_blank_values=True))
 
     received_hash = parsed.pop("hash", None)
     if not received_hash:
         raise AuthError("Missing hash in initData")
-
-    data_check_string = "\n".join(
-        f"{k}={v}" for k, v in sorted(parsed.items())
-    )
 
     secret_key = hmac.new(
         key=b"WebAppData",
@@ -38,14 +59,14 @@ def verify_telegram_init_data(init_data: str) -> TelegramUser:
         digestmod=hashlib.sha256,
     ).digest()
 
-    computed_hash = hmac.new(
-        key=secret_key,
-        msg=data_check_string.encode(),
-        digestmod=hashlib.sha256,
-    ).hexdigest()
+    computed_hash = _compute_telegram_hash(parsed, secret_key)
 
     if not hmac.compare_digest(computed_hash, received_hash):
-        raise AuthError("Invalid initData signature")
+        # Telegram Login Widget підписує іншим ключем — bot_token напряму (без "WebAppData")
+        secret_key_widget = hashlib.sha256(settings.telegram_bot_token.encode()).digest()
+        computed_hash_widget = _compute_telegram_hash(parsed, secret_key_widget)
+        if not hmac.compare_digest(computed_hash_widget, received_hash):
+            raise AuthError("Invalid initData signature")
 
     auth_date_raw = parsed.get("auth_date")
     if not auth_date_raw:
@@ -55,14 +76,25 @@ def verify_telegram_init_data(init_data: str) -> TelegramUser:
     if datetime.now(tz=timezone.utc) - auth_date > TELEGRAM_AUTH_MAX_AGE:
         raise AuthError("initData expired")
 
+    # Поле user може бути як JSON-об'єкт, так і розпаковані поля
     user_raw = parsed.get("user")
-    if not user_raw:
-        raise AuthError("Missing user payload")
-
-    try:
-        user_data = json.loads(user_raw)
-    except json.JSONDecodeError as exc:
-        raise AuthError(f"Invalid user JSON: {exc}") from exc
+    if user_raw:
+        try:
+            user_data = json.loads(user_raw)
+        except json.JSONDecodeError as exc:
+            raise AuthError(f"Invalid user JSON: {exc}") from exc
+    else:
+        # Telegram Login Widget кладе поля напряму
+        if "id" not in parsed:
+            raise AuthError("Missing user payload")
+        user_data = {
+            "id":           int(parsed["id"]),
+            "first_name":   parsed.get("first_name", ""),
+            "last_name":    parsed.get("last_name"),
+            "username":     parsed.get("username"),
+            "photo_url":    parsed.get("photo_url"),
+            "language_code": parsed.get("language_code"),
+        }
 
     return TelegramUser(**user_data)
 

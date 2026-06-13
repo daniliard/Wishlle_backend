@@ -5,6 +5,7 @@ from app.auth.repository import (
     create_user_from_telegram,
     find_user_by_google_sub,
     find_user_by_telegram_id,
+    update_user_from_telegram,
 )
 from app.auth.schemas import (
     AuthResponse,
@@ -43,8 +44,12 @@ async def telegram_login(payload: TelegramAuthRequest) -> AuthResponse:
 
     client = get_directus()
     user = await find_user_by_telegram_id(client, tg_user.id)
+
     if user is None:
         user = await create_user_from_telegram(client, tg_user)
+    else:
+        # Оновлюємо аватар/ім'я якщо є зміни
+        user = await update_user_from_telegram(client, str(user["id"]), tg_user)
 
     user_id = str(user["id"])
     return AuthResponse(
