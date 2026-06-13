@@ -161,38 +161,37 @@ def decode_access_token(token: str) -> str:
 
 
 async def verify_telegram_oidc_token(id_token: str) -> TelegramUser:
-    """
-    Верифікує JWT від нового Telegram Login (telegram-login.js).
-    Telegram підписує токени через власний JWKS endpoint (OIDC).
-    """
-    TELEGRAM_JWKS_URL = "https://oauth.telegram.org/jwks"
-    TELEGRAM_ISSUER   = "https://telegram.org"
+    """Верифікує OIDC id_token, отриманий від Telegram Web Login."""
+    telegram_jwks_url = "https://oauth.telegram.org/.well-known/jwks.json"
+    telegram_issuer = "https://oauth.telegram.org"
 
     try:
-        jwks_client = PyJWKClient(TELEGRAM_JWKS_URL)
+        jwks_client = PyJWKClient(telegram_jwks_url)
         signing_key = jwks_client.get_signing_key_from_jwt(id_token).key
         payload = jwt.decode(
             id_token,
             signing_key,
-            algorithms=["RS256", "ES256"],
-            # audience не обов'язковий — Telegram може не включати
-            options={"verify_aud": False, "verify_exp": True},
+            algorithms=["RS256", "ES256", "EdDSA", "ES256K"],
+            audience=str(settings.telegram_client_id),
+            issuer=telegram_issuer,
+            options={"verify_exp": True},
         )
     except Exception as exc:
         raise AuthError(f"Invalid Telegram OIDC token: {exc}") from exc
 
-    if payload.get("iss") != TELEGRAM_ISSUER:
-        raise AuthError(f"Unexpected issuer: {payload.get('iss')}")
-
-    # OIDC claims від Telegram
-    tg_id = payload.get("sub")
+    tg_id = payload.get("id") or payload.get("sub")
     if not tg_id:
-        raise AuthError("Missing sub in OIDC token")
+        raise AuthError("Missing Telegram user id in OIDC token")
+
+    full_name = (payload.get("name") or "").strip()
+    name_parts = full_name.split(maxsplit=1)
+    first_name = payload.get("given_name") or (name_parts[0] if name_parts else None)
+    last_name = payload.get("family_name") or (name_parts[1] if len(name_parts) > 1 else None)
 
     return TelegramUser(
         id=int(tg_id),
-        first_name=payload.get("given_name") or payload.get("name", "").split()[0] if payload.get("name") else None,
-        last_name=payload.get("family_name") or (" ".join(payload.get("name", "").split()[1:]) or None),
+        first_name=first_name,
+        last_name=last_name,
         username=payload.get("preferred_username"),
         photo_url=payload.get("picture"),
     )

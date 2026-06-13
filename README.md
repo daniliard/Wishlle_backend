@@ -81,3 +81,16 @@ app/
    колекції `notifications`.
 4. Опціонально (якщо `NOTIFIER_WISHES_ENABLED=true`) сповіщає про бажання,
    що були додані за останні `NOTIFIER_WISHES_LOOKBACK_HOURS` годин.
+
+## Telegram Web Login (OIDC)
+
+Для браузерного popup-входу потрібні змінні:
+
+```env
+TELEGRAM_CLIENT_ID=8624605092
+TELEGRAM_CLIENT_SECRET=<Client Secret із BotFather → Web Login>
+TELEGRAM_REDIRECT_URI=https://wishlle-4isp.vercel.app/auth/callback
+```
+
+Redirect URI має повністю збігатися з URL у BotFather та `VITE_TG_REDIRECT_URI` фронтенду.
+Поточна версія перевіряє `id_token` через офіційний JWKS endpoint Telegram, issuer та audience.
