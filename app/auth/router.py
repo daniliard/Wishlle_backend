@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel
 
 from app.auth.repository import (
     create_user_from_google,
@@ -70,6 +71,34 @@ async def google_login(payload: GoogleAuthRequest) -> AuthResponse:
     user = await find_user_by_google_sub(client, google_user.sub)
     if user is None:
         user = await create_user_from_google(client, google_user)
+
+    user_id = str(user["id"])
+    return AuthResponse(
+        access_token=issue_access_token(user_id),
+        user_id=user_id,
+        user=_to_user_data(user),
+    )
+
+
+class TelegramOIDCRequest(BaseModel):
+    id_token: str
+
+
+@router.post("/telegram-oidc", response_model=AuthResponse)
+async def telegram_oidc_login(payload: TelegramOIDCRequest) -> AuthResponse:
+    """Новий Telegram Login (telegram-login.js) — верифікує JWT через OIDC."""
+    try:
+        tg_user = await verify_telegram_oidc_token(payload.id_token)
+    except AuthError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
+
+    client = get_directus()
+    user = await find_user_by_telegram_id(client, tg_user.id)
+
+    if user is None:
+        user = await create_user_from_telegram(client, tg_user)
+    else:
+        user = await update_user_from_telegram(client, str(user["id"]), tg_user)
 
     user_id = str(user["id"])
     return AuthResponse(

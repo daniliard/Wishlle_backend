@@ -158,3 +158,41 @@ def decode_access_token(token: str) -> str:
     if not user_id:
         raise AuthError("Token missing subject")
     return user_id
+
+
+async def verify_telegram_oidc_token(id_token: str) -> TelegramUser:
+    """
+    Верифікує JWT від нового Telegram Login (telegram-login.js).
+    Telegram підписує токени через власний JWKS endpoint (OIDC).
+    """
+    TELEGRAM_JWKS_URL = "https://oauth.telegram.org/jwks"
+    TELEGRAM_ISSUER   = "https://telegram.org"
+
+    try:
+        jwks_client = PyJWKClient(TELEGRAM_JWKS_URL)
+        signing_key = jwks_client.get_signing_key_from_jwt(id_token).key
+        payload = jwt.decode(
+            id_token,
+            signing_key,
+            algorithms=["RS256", "ES256"],
+            # audience не обов'язковий — Telegram може не включати
+            options={"verify_aud": False, "verify_exp": True},
+        )
+    except Exception as exc:
+        raise AuthError(f"Invalid Telegram OIDC token: {exc}") from exc
+
+    if payload.get("iss") != TELEGRAM_ISSUER:
+        raise AuthError(f"Unexpected issuer: {payload.get('iss')}")
+
+    # OIDC claims від Telegram
+    tg_id = payload.get("sub")
+    if not tg_id:
+        raise AuthError("Missing sub in OIDC token")
+
+    return TelegramUser(
+        id=int(tg_id),
+        first_name=payload.get("given_name") or payload.get("name", "").split()[0] if payload.get("name") else None,
+        last_name=payload.get("family_name") or (" ".join(payload.get("name", "").split()[1:]) or None),
+        username=payload.get("preferred_username"),
+        photo_url=payload.get("picture"),
+    )
