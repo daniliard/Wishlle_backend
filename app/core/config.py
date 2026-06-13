@@ -1,5 +1,4 @@
 from functools import lru_cache
-
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -20,22 +19,25 @@ class Settings(BaseSettings):
 
     directus_users_collection: str = Field(default="users")
     directus_events_collection: str = Field(default="events")
-    directus_wishes_collection: str = Field(default="wishes")
+    directus_wishes_collection: str = Field(default="wish_lists")
     directus_notifications_collection: str = Field(default="notifications")
     directus_users_telegram_field: str = Field(default="telegram_id")
-    directus_users_locale_field: str = Field(default="locale")
-    directus_events_owner_field: str = Field(default="owner")
+    directus_users_locale_field: str = Field(default="language")
+    directus_events_owner_field: str = Field(default="owner_id")
     directus_events_date_field: str = Field(default="event_date")
     directus_events_title_field: str = Field(default="title")
-    directus_wishes_owner_field: str = Field(default="owner")
+    directus_wishes_owner_field: str = Field(default="owner_id")
     directus_wishes_title_field: str = Field(default="title")
     directus_wishes_created_field: str = Field(default="date_created")
-    directus_notifications_user_field: str = Field(default="user")
-    directus_notifications_event_field: str = Field(default="event")
-    directus_notifications_days_field: str = Field(default="days_before")
+    directus_notifications_user_field: str = Field(default="recipient_id")
+    directus_notifications_event_field: str = Field(default="related_id")
+    directus_notifications_days_field: str = Field(default="type")
 
     telegram_bot_token: str = Field(...)
     telegram_bot_username: str = Field(default="")
+    telegram_client_id: str = Field(default="8624605092")
+    telegram_client_secret: str = Field(default="")
+    telegram_redirect_uri: str = Field(default="https://wishlle-4isp.vercel.app/auth/callback")
 
     google_client_id: str = Field(default="")
 
@@ -53,7 +55,10 @@ class Settings(BaseSettings):
     notifier_wishes_enabled: bool = Field(default=True)
     notifier_wishes_lookback_hours: int = Field(default=24)
 
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    cors_origins: list[str] = Field(default_factory=lambda: [
+        "http://localhost:5173",
+        "https://wishlle-4isp.vercel.app",
+    ])
 
 
 @lru_cache
