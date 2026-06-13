@@ -9,10 +9,19 @@ class GoogleAuthRequest(BaseModel):
     id_token: str
 
 
+class UserData(BaseModel):
+    id: str
+    display_name: str | None = None
+    username: str | None = None
+    avatar_url: str | None = None
+    auth_provider: str | None = None
+
+
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user_id: str
+    user: UserData
 
 
 class TelegramUser(BaseModel):
