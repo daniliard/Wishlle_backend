@@ -297,10 +297,8 @@ async def create_event(
                 await create_notification(
                     recipient_id=row['user_id'],
                     notif_type='event_invite',
-                    title='Запрошення на подію 🎉',
-                    body=f'Вас запросили на «{event_title}».',
+                    telegram_text=f'<b>Запрошення на подію 🎉</b>\nВас запросили на «{event_title}».',
                     related_id=event_id,
-                    data={'event_id': event_id},
                 )
 
         parts = await _event_participants(event_id)
@@ -392,10 +390,8 @@ async def invite_participants(
             await create_notification(
                 recipient_id=pid,
                 notif_type='event_invite',
-                title='Запрошення на подію 🎉',
-                body=f'Вас запросили на «{event.get("title") or "подію"}».',
+                telegram_text=f'<b>Запрошення на подію 🎉</b>\nВас запросили на «{event.get("title") or "подію"}».',
                 related_id=event_id,
-                data={'event_id': event_id},
             )
 
         return await event_details(event_id, user_id)

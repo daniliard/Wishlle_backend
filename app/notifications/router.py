@@ -1,5 +1,9 @@
-"""Центр сповіщень — читання, позначення прочитаними, видалення."""
-import json
+"""Центр сповіщень. Працює тільки з полями ER-схеми:
+recipient_id, type, related_id, sent_at, delivered, error_message.
+
+Текст сповіщення будується на льоту з type + related_id.
+"delivered" використовується як ознака "прочитано" в UI-центрі.
+"""
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -15,32 +19,101 @@ USER_FIELD = settings.directus_notifications_user_field
 TYPE_FIELD = settings.directus_notifications_days_field
 RELATED_FIELD = settings.directus_notifications_event_field
 
-# Типи, які показуємо в центрі сповіщень (системні логи notifier'а пропускаємо,
-# бо там type — число днів, а не рядок-тип)
 UI_TYPES = {'friend_request', 'friend_accepted', 'event_invite', 'event_reminder', 'reservation'}
 
 
-def _to_data(row: dict) -> NotificationData:
-    raw_data = row.get('data')
-    parsed: dict[str, Any] = {}
-    if isinstance(raw_data, dict):
-        parsed = raw_data
-    elif isinstance(raw_data, str) and raw_data.strip():
-        try:
-            parsed = json.loads(raw_data)
-        except (TypeError, ValueError):
-            parsed = {}
+def _rel(value: Any) -> str | None:
+    if isinstance(value, dict):
+        value = value.get('id')
+    return str(value) if value is not None else None
 
-    return NotificationData(
-        id=str(row['id']),
-        type=str(row.get(TYPE_FIELD) or 'info'),
-        title=row.get('title') or '',
-        body=row.get('body'),
-        related_id=str(row[RELATED_FIELD]) if row.get(RELATED_FIELD) else None,
-        is_read=bool(row.get('is_read', False)),
-        created_at=row.get('sent_at') or row.get('date_created'),
-        data=parsed,
-    )
+
+# Шаблони тексту для UI (uk). Назви сутностей підставляються з related-даних.
+TEXT_TEMPLATES = {
+    'friend_request':  ('Нова заявка в друзі 👋', 'Хтось хоче додати тебе в друзі.'),
+    'friend_accepted': ('Заявку прийнято 🤝', 'Тепер ви друзі.'),
+    'event_invite':    ('Запрошення на подію 🎉', 'Вас запросили на подію.'),
+    'event_reminder':  ('Скоро подія 🗓️', 'Наближається запланована подія.'),
+    'reservation':     ('Подарунок зарезервовано 🎁', 'Хтось зарезервував товар із твого списку.'),
+}
+
+# Куди веде сповіщення на фронті
+NAV_TARGET = {
+    'friend_request': 'friends',
+    'friend_accepted': 'friends',
+    'event_invite': 'events',
+    'event_reminder': 'events',
+    'reservation': 'lists',
+}
+
+
+async def _enrich(rows: list[dict]) -> list[NotificationData]:
+    """Підтягує назви подій/списків для red_id, щоб текст був конкретним."""
+    client = get_directus()
+
+    event_ids: set[str] = set()
+    list_ids: set[str] = set()
+    for r in rows:
+        t = str(r.get(TYPE_FIELD) or '')
+        rid = _rel(r.get(RELATED_FIELD))
+        if not rid:
+            continue
+        if t in ('event_invite', 'event_reminder'):
+            event_ids.add(rid)
+        elif t == 'reservation':
+            list_ids.add(rid)
+
+    events: dict[str, str] = {}
+    if event_ids:
+        try:
+            ev_rows = await client.get_items(
+                settings.directus_events_collection,
+                fields=['id', settings.directus_events_title_field],
+                filter_={'id': {'_in': list(event_ids)}},
+            )
+            events = {str(e['id']): e.get(settings.directus_events_title_field) or '' for e in ev_rows}
+        except DirectusError:
+            pass
+
+    lists: dict[str, str] = {}
+    if list_ids:
+        try:
+            wl_rows = await client.get_items(
+                settings.directus_wishes_collection,
+                fields=['id', 'title'],
+                filter_={'id': {'_in': list(list_ids)}},
+            )
+            lists = {str(w['id']): w.get('title') or '' for w in wl_rows}
+        except DirectusError:
+            pass
+
+    result: list[NotificationData] = []
+    for r in rows:
+        t = str(r.get(TYPE_FIELD) or 'info')
+        rid = _rel(r.get(RELATED_FIELD))
+        title, body = TEXT_TEMPLATES.get(t, ('Сповіщення', None))
+
+        # Конкретизуємо текст назвою
+        if t in ('event_invite', 'event_reminder') and rid and events.get(rid):
+            body = f'«{events[rid]}»'
+            if t == 'event_invite':
+                body = f'Вас запросили на «{events[rid]}».'
+            else:
+                body = f'Наближається подія «{events[rid]}».'
+        elif t == 'reservation' and rid and lists.get(rid):
+            body = f'Хтось зарезервував подарунок зі списку «{lists[rid]}».'
+
+        result.append(NotificationData(
+            id=str(r['id']),
+            type=t,
+            title=title,
+            body=body,
+            related_id=rid,
+            is_read=bool(r.get('delivered', False)),
+            created_at=r.get('sent_at') or r.get('date_created'),
+            nav=NAV_TARGET.get(t),
+        ))
+    return result
 
 
 @router.get('', response_model=list[NotificationData])
@@ -60,7 +133,7 @@ async def list_notifications(
             limit=limit,
         )
         rows.sort(key=lambda r: str(r.get('sent_at') or r.get('date_created') or ''), reverse=True)
-        return [_to_data(r) for r in rows]
+        return await _enrich(rows)
     except DirectusError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -75,7 +148,7 @@ async def unread_count(user_id: str = Depends(current_user_id)) -> UnreadCount:
             filter_={'_and': [
                 {USER_FIELD: {'_eq': user_id}},
                 {TYPE_FIELD: {'_in': list(UI_TYPES)}},
-                {'is_read': {'_eq': False}},
+                {'delivered': {'_eq': False}},
             ]},
             limit=100,
         )
@@ -86,25 +159,25 @@ async def unread_count(user_id: str = Depends(current_user_id)) -> UnreadCount:
 
 async def _owned(notification_id: str, user_id: str) -> dict:
     row = await get_directus().get_item(settings.directus_notifications_collection, notification_id)
-    if not row or str(row.get(USER_FIELD)) != user_id:
+    if not row or _rel(row.get(USER_FIELD)) != user_id:
         raise HTTPException(status_code=404, detail='Сповіщення не знайдено.')
     return row
 
 
-@router.post('/{notification_id}/read', response_model=NotificationData)
+@router.post('/{notification_id}/read', status_code=status.HTTP_204_NO_CONTENT)
 async def mark_read(
     notification_id: str,
     user_id: str = Depends(current_user_id),
-) -> NotificationData:
+) -> Response:
     client = get_directus()
     try:
         await _owned(notification_id, user_id)
-        updated = await client.update_item(
+        await client.update_item(
             settings.directus_notifications_collection,
             notification_id,
-            {'is_read': True},
+            {'delivered': True},   # delivered = "прочитано" в UI
         )
-        return _to_data(updated)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     except DirectusError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -119,13 +192,13 @@ async def mark_all_read(user_id: str = Depends(current_user_id)) -> UnreadCount:
             filter_={'_and': [
                 {USER_FIELD: {'_eq': user_id}},
                 {TYPE_FIELD: {'_in': list(UI_TYPES)}},
-                {'is_read': {'_eq': False}},
+                {'delivered': {'_eq': False}},
             ]},
             limit=100,
         )
         for r in rows:
             await client.update_item(
-                settings.directus_notifications_collection, r['id'], {'is_read': True}
+                settings.directus_notifications_collection, r['id'], {'delivered': True}
             )
         return UnreadCount(count=0)
     except DirectusError as exc:

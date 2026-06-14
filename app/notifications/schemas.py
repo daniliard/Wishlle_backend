@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class NotificationData(BaseModel):
@@ -9,8 +9,8 @@ class NotificationData(BaseModel):
     related_id: str | None = None
     is_read: bool = False
     created_at: str | None = None
-    # Додаткові дані для навігації на фронті (event_id, friendship_id тощо)
-    data: dict = Field(default_factory=dict)
+    # Куди вести на фронті (friends/events/lists)
+    nav: str | None = None
 
 
 class UnreadCount(BaseModel):

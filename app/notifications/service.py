@@ -1,19 +1,20 @@
 """Спільний сервіс сповіщень.
 
-Створює запис у колекції notifications (центр сповіщень в UI) та
-паралельно надсилає повідомлення в Telegram, якщо у користувача є telegram_id.
+Працює СУВОРО з полями колекції notifications за ER-схемою:
+recipient_id, type, related_id, sent_at, delivered, error_message.
 
-Типи сповіщень:
+Жодних додаткових полів (title/body/is_read) не використовуємо —
+текст сповіщення генерується на льоту з type + related_id.
+
+Типи (поле type — string):
 - friend_request   — нова заявка в друзі
 - friend_accepted  — заявку прийнято
 - event_invite     — запрошення на подію
-- event_reminder   — нагадування про найближчу подію
+- event_reminder   — нагадування про подію
 - reservation      — твій товар зарезервували
 """
-import json
 import logging
 from datetime import datetime, timezone
-from typing import Any
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
@@ -23,8 +24,8 @@ from app.core.directus import DirectusClient, DirectusError, get_directus
 
 logger = logging.getLogger("wishlle.notifications")
 
-USER_FIELD = settings.directus_notifications_user_field   # recipient_id
-TYPE_FIELD = settings.directus_notifications_days_field    # type
+USER_FIELD = settings.directus_notifications_user_field    # recipient_id
+TYPE_FIELD = settings.directus_notifications_days_field     # type
 RELATED_FIELD = settings.directus_notifications_event_field  # related_id
 
 
@@ -53,30 +54,26 @@ async def _send_telegram(chat_id: str, text: str) -> tuple[bool, str | None]:
 async def create_notification(
     recipient_id: str,
     notif_type: str,
-    title: str,
-    body: str | None = None,
-    related_id: str | None = None,
-    data: dict[str, Any] | None = None,
     *,
+    telegram_text: str | None = None,
+    related_id: str | None = None,
     send_telegram: bool = True,
 ) -> dict | None:
-    """Створює сповіщення в БД і (за наявності) шле в Telegram.
+    """Створює запис сповіщення (тільки поля зі схеми) і шле в Telegram.
 
-    Помилки тут не мають ламати основну дію (резервування, запрошення),
-    тому винятки логуються, але не пробрасуються.
+    telegram_text — готовий текст саме для Telegram-повідомлення.
+    У БД зберігаються лише type + related_id; текст для UI будується
+    окремо при читанні (див. router._build_text).
+    Помилки не пробрасуються, щоб не ламати основну дію.
     """
     client = get_directus()
     now = datetime.now(tz=timezone.utc)
 
-    payload: dict[str, Any] = {
+    payload = {
         USER_FIELD: recipient_id,
         TYPE_FIELD: notif_type,
-        'title': title,
-        'body': body,
-        'is_read': False,
         'sent_at': now.isoformat(),
         'delivered': False,
-        'data': json.dumps(data or {}),
     }
     if related_id is not None:
         payload[RELATED_FIELD] = related_id
@@ -87,24 +84,12 @@ async def create_notification(
     except DirectusError as exc:
         logger.warning("Could not store notification: %s", exc)
 
-    if send_telegram:
+    if send_telegram and telegram_text:
         try:
             chat_id = await _telegram_id(client, recipient_id)
             if chat_id:
-                tg_text = f"<b>{title}</b>"
-                if body:
-                    tg_text += f"\n{body}"
-                ok, err = await _send_telegram(str(chat_id), tg_text)
-                if created and ok:
-                    try:
-                        await client.update_item(
-                            settings.directus_notifications_collection,
-                            created['id'],
-                            {'delivered': True},
-                        )
-                    except DirectusError:
-                        pass
-                elif created and err:
+                ok, err = await _send_telegram(str(chat_id), telegram_text)
+                if created and err:
                     try:
                         await client.update_item(
                             settings.directus_notifications_collection,

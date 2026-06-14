@@ -210,10 +210,8 @@ async def reserve_item(
             await create_notification(
                 recipient_id=owner_id,
                 notif_type='reservation',
-                title='Подарунок зарезервовано 🎁',
-                body=f'Хтось зарезервував «{item_title}» з твого списку.',
+                telegram_text=f'<b>Подарунок зарезервовано 🎁</b>\nХтось зарезервував «{item_title}» з твого списку.',
                 related_id=wishlist_id,
-                data={'wishlist_id': wishlist_id, 'item_id': payload.item_id},
             )
 
         return ReservationData(
