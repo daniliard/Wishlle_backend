@@ -98,6 +98,11 @@ class DirectusClient:
             "PATCH", f"/items/{collection}/{item_id}", json=payload
         )
 
+    async def delete_item(
+        self, collection: str, item_id: str | int
+    ) -> None:
+        await self._request("DELETE", f"/items/{collection}/{item_id}")
+
     async def upload_file(
         self,
         *,
