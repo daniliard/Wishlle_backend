@@ -16,25 +16,35 @@ class EventCreate(BaseModel):
     location: str | None = Field(default=None, max_length=255)
     event_type: EventType
     honoree_id: str | None = None
-    cover_image: str | None = None
-    # ID друзів, яких одразу запросити
+    # Існуюче поле cover_image використовуємо також як ярлик/emoji події.
+    cover_image: str | None = Field(default=None, max_length=255)
     participant_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode='after')
     def _check_honoree(self):
         if self.event_type == 'private' and not self.honoree_id:
-            raise ValueError("Для приватної події потрібно вказати іменинника (honoree_id).")
+            raise ValueError('Для приватної події потрібно вказати іменинника (honoree_id).')
         if self.event_type == 'group' and self.honoree_id:
-            raise ValueError("Групова подія не може мати honoree_id.")
+            raise ValueError('Групова подія не може мати honoree_id.')
         return self
 
 
 class EventUpdate(BaseModel):
-    title: str | None = Field(default=None, max_length=120)
+    title: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = None
     event_date: date | None = None
     location: str | None = Field(default=None, max_length=255)
-    cover_image: str | None = None
+    event_type: EventType | None = None
+    honoree_id: str | None = None
+    cover_image: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode='after')
+    def _check_partial_honoree(self):
+        if self.event_type == 'private' and not self.honoree_id:
+            raise ValueError('Для приватної події потрібно вказати іменинника (honoree_id).')
+        if self.event_type == 'group' and self.honoree_id:
+            raise ValueError('Групова подія не може мати honoree_id.')
+        return self
 
 
 class ParticipantUser(BaseModel):
@@ -59,6 +69,7 @@ class EventWishlistData(BaseModel):
     items_count: int = 0
     owner_id: str
     owner_name: str
+    visibility: str = 'public'
 
 
 class EventData(BaseModel):
@@ -72,16 +83,13 @@ class EventData(BaseModel):
     honoree_id: str | None = None
     is_auto: bool = False
     cover_image: str | None = None
-    # Поточний користувач — власник?
     is_owner: bool = False
-    # Статус участі поточного користувача
     my_status: ParticipantStatus | None = None
     participants_count: int = 0
 
 
 class EventDetailData(EventData):
     participants: list[ParticipantData] = Field(default_factory=list)
-    # Списки побажань, доступні в контексті події
     wishlists: list[EventWishlistData] = Field(default_factory=list)
 
 
