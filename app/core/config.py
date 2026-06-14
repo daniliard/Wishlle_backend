@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     directus_users_collection: str = Field(default="users")
     directus_friendships_collection: str = Field(default="friendships")
     directus_events_collection: str = Field(default="events")
+    directus_event_participants_collection: str = Field(default="event_participants")
     directus_wishes_collection: str = Field(default="wish_lists")
     directus_wish_items_collection: str = Field(default="wish_items")
     directus_notifications_collection: str = Field(default="notifications")

@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.auth.router import router as auth_router
 from app.core.config import settings
 from app.core.directus import close_directus
+from app.events.router import router as events_router
 from app.friends.router import router as friends_router
 from app.notifier.scheduler import scheduler, start_scheduler
 from app.parser.router import router as parser_router
@@ -42,6 +43,7 @@ app.include_router(profile_router, prefix="/api/profile", tags=["profile"])
 app.include_router(friends_router, prefix="/api/friends", tags=["friends"])
 app.include_router(wishlists_router, prefix="/api/wishlists", tags=["wishlists"])
 app.include_router(reservations_router, prefix="/api/reservations", tags=["reservations"])
+app.include_router(events_router, prefix="/api/events", tags=["events"])
 
 
 @app.get("/health")
