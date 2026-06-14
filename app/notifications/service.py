@@ -58,6 +58,7 @@ async def create_notification(
     telegram_text: str | None = None,
     related_id: str | None = None,
     send_telegram: bool = True,
+    required: bool = False,
 ) -> dict | None:
     """Створює запис сповіщення (тільки поля зі схеми) і шле в Telegram.
 
@@ -83,6 +84,8 @@ async def create_notification(
         created = await client.create_item(settings.directus_notifications_collection, payload)
     except DirectusError as exc:
         logger.warning("Could not store notification: %s", exc)
+        if required:
+            raise
 
     if send_telegram and telegram_text:
         try:

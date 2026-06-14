@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -52,6 +52,8 @@ class FriendUserData(BaseModel):
 class SearchUserData(FriendUserData):
     already_added: bool = False
     can_add: bool = True
+    request_status: Literal['none', 'outgoing', 'incoming', 'friends'] = 'none'
+    request_id: str | None = None
 
 
 class FriendshipData(BaseModel):
@@ -62,6 +64,21 @@ class FriendshipData(BaseModel):
     created_at: str | None = None
     accessible_lists_count: int = 0
     user: FriendUserData
+
+
+class FriendRequestData(BaseModel):
+    id: str
+    requester_id: str
+    created_at: str | None = None
+    is_read: bool = False
+    user: FriendUserData
+
+
+class FriendRequestSentData(BaseModel):
+    id: str
+    recipient_id: str
+    status: Literal['pending'] = 'pending'
+    created_at: str | None = None
 
 
 class FriendWishlistData(BaseModel):
