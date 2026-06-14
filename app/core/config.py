@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     directus_wishes_collection: str = Field(default="wish_lists")
     directus_wish_items_collection: str = Field(default="wish_items")
     directus_notifications_collection: str = Field(default="notifications")
+    directus_reservations_collection: str = Field(default="reservations")
     directus_users_telegram_field: str = Field(default="telegram_id")
     directus_users_locale_field: str = Field(default="language")
     directus_events_owner_field: str = Field(default="owner_id")

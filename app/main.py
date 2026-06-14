@@ -10,6 +10,7 @@ from app.friends.router import router as friends_router
 from app.notifier.scheduler import scheduler, start_scheduler
 from app.parser.router import router as parser_router
 from app.profile.router import router as profile_router
+from app.reservations.router import router as reservations_router
 from app.wishlists.router import router as wishlists_router
 
 
@@ -40,6 +41,7 @@ app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 app.include_router(profile_router, prefix="/api/profile", tags=["profile"])
 app.include_router(friends_router, prefix="/api/friends", tags=["friends"])
 app.include_router(wishlists_router, prefix="/api/wishlists", tags=["wishlists"])
+app.include_router(reservations_router, prefix="/api/reservations", tags=["reservations"])
 
 
 @app.get("/health")
