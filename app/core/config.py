@@ -26,7 +26,6 @@ class Settings(BaseSettings):
     directus_notifications_collection: str = Field(default="notifications")
     directus_users_telegram_field: str = Field(default="telegram_id")
     directus_users_locale_field: str = Field(default="language")
-    directus_users_preferences_field: str = Field(default="preferences")
     directus_events_owner_field: str = Field(default="owner_id")
     directus_events_date_field: str = Field(default="event_date")
     directus_events_title_field: str = Field(default="title")

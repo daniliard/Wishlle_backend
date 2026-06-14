@@ -7,7 +7,6 @@ from aiogram.enums import ParseMode
 
 from app.core.config import settings
 from app.core.directus import DirectusClient, DirectusError, get_directus
-from app.profile.schemas import parse_preferences
 
 
 logger = logging.getLogger(__name__)
@@ -55,7 +54,7 @@ async def _fetch_telegram_users(
     tg_field = settings.directus_users_telegram_field
     users = await client.get_items(
         settings.directus_users_collection,
-        fields=["id", tg_field, "display_name", "username", settings.directus_users_preferences_field],
+        fields=["id", tg_field, "display_name", "username"],
         filter_={tg_field: {"_nnull": True}},
     )
     return {u["id"]: u for u in users if u.get(tg_field)}
@@ -124,10 +123,6 @@ async def collect_due_events(
         user = users_by_id.get(owner_id)
         if user is None:
             continue
-        preferences = parse_preferences(user.get(settings.directus_users_preferences_field))
-        if not preferences.notifications.telegram or not preferences.notifications.event_reminders:
-            continue
-
         days_left = _days_until(event_date, today)
         if days_left in reminder_days:
             due.append((user, event, days_left))
@@ -160,9 +155,6 @@ async def collect_recent_wishes(
         owner_id = owner_ref.get("id") if isinstance(owner_ref, dict) else owner_ref
         user = users_by_id.get(owner_id)
         if user is None:
-            continue
-        preferences = parse_preferences(user.get(settings.directus_users_preferences_field))
-        if not preferences.notifications.telegram or not preferences.notifications.wishlist_updates:
             continue
         result.append((user, wish.get(title_field) or "Без назви"))
     return result

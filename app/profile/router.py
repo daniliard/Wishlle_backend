@@ -6,7 +6,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.auth.service import AuthError, decode_access_token
 from app.core.config import settings
 from app.core.directus import DirectusError, get_directus
-from app.profile.schemas import ProfileData, ProfileUpdate, parse_preferences
+from app.profile.schemas import ProfileData, ProfileUpdate
 
 router = APIRouter()
 bearer = HTTPBearer(auto_error=False)
@@ -17,10 +17,6 @@ ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
 
 
 def _profile(user: dict) -> ProfileData:
-    preferences = parse_preferences(user.get(settings.directus_users_preferences_field))
-    if not user.get(settings.directus_users_telegram_field):
-        preferences.notifications.telegram = False
-
     return ProfileData(
         id=str(user['id']),
         display_name=user.get('display_name'),
@@ -30,9 +26,7 @@ def _profile(user: dict) -> ProfileData:
         auth_provider=user.get('auth_provider'),
         language=user.get('language') or 'uk',
         has_telegram=bool(user.get(settings.directus_users_telegram_field)),
-        preferences=preferences,
     )
-
 
 def current_user_id(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
@@ -53,18 +47,7 @@ async def _get_user(user_id: str) -> dict:
 
 
 def _directus_profile_error(exc: DirectusError) -> HTTPException:
-    text = str(exc)
-    field = settings.directus_users_preferences_field
-    if field in text and any(marker in text.lower() for marker in ('field', 'column', 'unknown', 'invalid')):
-        return HTTPException(
-            status_code=500,
-            detail=(
-                f'У колекції {settings.directus_users_collection} потрібно створити JSON-поле '
-                f'«{field}» для налаштувань приватності та сповіщень.'
-            ),
-        )
-    return HTTPException(status_code=502, detail=text)
-
+    return HTTPException(status_code=502, detail=str(exc))
 
 @router.get('/me', response_model=ProfileData)
 async def get_profile(user_id: str = Depends(current_user_id)) -> ProfileData:
@@ -95,12 +78,6 @@ async def update_profile(
         )
         if matches:
             raise HTTPException(status_code=409, detail='Цей нікнейм уже зайнятий.')
-
-    if 'preferences' in data:
-        data[settings.directus_users_preferences_field] = data.pop('preferences')
-        current = await _get_user(user_id)
-        if not current.get(settings.directus_users_telegram_field):
-            data[settings.directus_users_preferences_field]['notifications']['telegram'] = False
 
     try:
         updated = await client.update_item(settings.directus_users_collection, user_id, data)

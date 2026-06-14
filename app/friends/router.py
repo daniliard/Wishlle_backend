@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from app.core.config import settings
 from app.core.directus import DirectusError, get_directus
 from app.profile.router import current_user_id
-from app.profile.schemas import parse_preferences
 from app.friends.schemas import (
     FriendCreate,
     FriendDetailsData,
@@ -46,22 +45,16 @@ def _tags(value: Any) -> list[str]:
     return []
 
 
-def _privacy(user: dict):
-    return parse_preferences(user.get(settings.directus_users_preferences_field)).privacy
-
-
-def _visible_user(user: dict, *, added: bool) -> FriendUserData:
-    privacy = _privacy(user)
-    can_view_profile = privacy.profile_visibility == 'public' or (
-        privacy.profile_visibility == 'friends' and added
-    )
-
+def _visible_user(user: dict, *, added: bool = True) -> FriendUserData:
+    # Схема дипломної роботи не містить окремих серверних налаштувань
+    # приватності. Тому показуємо базові поля профілю, а доступ до списків
+    # контролюємо через wish_lists.visibility.
     return FriendUserData(
         id=str(user['id']),
         display_name=user.get('display_name') or user.get('username') or 'Користувач',
-        username=user.get('username') if privacy.show_username and can_view_profile else None,
+        username=user.get('username'),
         avatar_url=user.get('avatar_url'),
-        birth_date=user.get('birth_date') if privacy.show_birth_date and can_view_profile else None,
+        birth_date=user.get('birth_date'),
     )
 
 
@@ -73,12 +66,6 @@ def _list_visibility(item: dict) -> str:
 
 
 def _can_view_wishlist(item: dict, owner: dict, *, added: bool) -> bool:
-    global_visibility = _privacy(owner).wishlists_visibility
-    if global_visibility == 'private':
-        return False
-    if global_visibility == 'friends' and not added:
-        return False
-
     visibility = _list_visibility(item)
     if visibility == 'private':
         return False
@@ -129,7 +116,6 @@ async def _users_by_ids(ids: list[str]) -> dict[str, dict]:
         settings.directus_users_collection,
         fields=[
             'id', 'display_name', 'username', 'avatar_url', 'birth_date',
-            settings.directus_users_preferences_field,
         ],
         filter_={'id': {'_in': ids}},
     )
@@ -213,7 +199,6 @@ async def search_users(
             settings.directus_users_collection,
             fields=[
                 'id', 'display_name', 'username', 'avatar_url', 'birth_date',
-                settings.directus_users_preferences_field,
             ],
             filter_={
                 '_and': [
@@ -231,16 +216,13 @@ async def search_users(
 
         result: list[SearchUserData] = []
         for candidate in candidates:
-            privacy = _privacy(candidate)
-            if not privacy.searchable_by_username:
-                continue
             candidate_id = str(candidate['id'])
             visible = _visible_user(candidate, added=candidate_id in existing_ids)
             result.append(
                 SearchUserData(
                     **visible.model_dump(),
                     already_added=candidate_id in existing_ids,
-                    can_add=privacy.allow_friend_requests,
+                    can_add=True,
                 )
             )
             if len(result) >= limit:
@@ -265,13 +247,10 @@ async def add_friend(
             payload.friend_id,
             fields=[
                 'id', 'display_name', 'username', 'avatar_url', 'birth_date',
-                settings.directus_users_preferences_field,
             ],
         )
         if not target:
             raise HTTPException(status_code=404, detail='Користувача не знайдено.')
-        if not _privacy(target).allow_friend_requests:
-            raise HTTPException(status_code=403, detail='Цей користувач заборонив додавання до друзів.')
         if await _friendship_between(user_id, payload.friend_id):
             raise HTTPException(status_code=409, detail='Цей користувач уже є у твоєму списку друзів.')
 
@@ -319,7 +298,6 @@ async def update_friend(
             friend_id,
             fields=[
                 'id', 'display_name', 'username', 'avatar_url', 'birth_date',
-                settings.directus_users_preferences_field,
             ],
         )
         if not target:
@@ -367,7 +345,6 @@ async def friend_details(
             friend_id,
             fields=[
                 'id', 'display_name', 'username', 'avatar_url', 'birth_date',
-                settings.directus_users_preferences_field,
             ],
         )
         if not target:
