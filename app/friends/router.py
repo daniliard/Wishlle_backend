@@ -59,21 +59,29 @@ def _visible_user(user: dict, *, added: bool = True) -> FriendUserData:
 
 
 def _list_visibility(item: dict) -> str:
+    # 1) Явне текстове поле visibility (public / friends / private)
     value = str(item.get('visibility') or '').strip().lower()
     if value in {'public', 'friends', 'private'}:
         return value
 
+    # 2) Старе поле is_public у будь-якому форматі:
+    #    bool True/False, число 1/0, рядок "true"/"false"/"1"/"0"/"yes"/"no"
     legacy = item.get('is_public')
     if isinstance(legacy, bool):
         return 'public' if legacy else 'private'
-    if legacy is not None:
-        normalized = str(legacy).strip().lower()
-        if normalized in {'1', 'true', 'yes', 'on'}:
+    if isinstance(legacy, (int, float)):
+        return 'public' if int(legacy) != 0 else 'private'
+    if isinstance(legacy, str):
+        normalized = legacy.strip().lower()
+        if normalized in {'1', 'true', 'yes', 'on', 'public'}:
             return 'public'
-        if normalized in {'0', 'false', 'no', 'off'}:
+        if normalized in {'0', 'false', 'no', 'off', 'private'}:
             return 'private'
 
-    return 'private'
+    # 3) Нічого не вказано — за замовчуванням список ПУБЛІЧНИЙ.
+    #    (У вішліст-застосунку списки створюються щоб ними ділитися,
+    #    тому відсутність прапорця не повинна ховати список від друзів.)
+    return 'public'
 
 
 def _can_view_wishlist(item: dict, owner: dict, *, added: bool) -> bool:
@@ -454,3 +462,37 @@ async def friend_details(
         )
     except DirectusError as exc:
         raise _directus_error(exc) from exc
+
+
+@router.get('/{friend_id}/debug')
+async def friend_debug(
+    friend_id: str,
+    user_id: str = Depends(current_user_id),
+) -> dict:
+    """ТИМЧАСОВИЙ діагностичний ендпоінт. Показує сирі дані зі списків друга.
+    Видали після того як розберешся з видимістю."""
+    client = get_directus()
+    raw_lists = await _owner_wishlists(friend_id)
+    target = await client.get_item(
+        settings.directus_users_collection,
+        friend_id,
+        fields=['id', 'display_name', 'username'],
+    )
+    return {
+        'friend_id': friend_id,
+        'owner_field_used': settings.directus_wishes_owner_field,
+        'raw_lists_count': len(raw_lists),
+        'raw_lists': [
+            {
+                'id': str(item.get('id')),
+                'title': item.get('title'),
+                'is_public_raw': item.get('is_public'),
+                'is_public_type': type(item.get('is_public')).__name__,
+                'visibility_raw': item.get('visibility'),
+                'computed_visibility': _list_visibility(item),
+                'can_view': _can_view_wishlist(item, target or {}, added=True),
+                'all_keys': list(item.keys()),
+            }
+            for item in raw_lists
+        ],
+    }
