@@ -1,7 +1,7 @@
-from datetime import date
+from datetime import date, datetime, time
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 EventType = Literal['private', 'group']
@@ -9,16 +9,33 @@ ParticipantStatus = Literal['invited', 'accepted', 'declined']
 ParticipantRole = Literal['honoree', 'participant']
 
 
+def _event_datetime(value):
+    """Приймає новий ISO datetime і старі записи формату YYYY-MM-DD."""
+    if value is None or isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, time(hour=12))
+    text = str(value).strip()
+    if len(text) == 10:
+        return datetime.fromisoformat(f'{text}T12:00:00')
+    return value
+
+
 class EventCreate(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     description: str | None = None
-    event_date: date
+    event_date: datetime
     location: str | None = Field(default=None, max_length=255)
     event_type: EventType
     honoree_id: str | None = None
     # Існуюче поле cover_image використовуємо також як ярлик/emoji події.
     cover_image: str | None = Field(default=None, max_length=255)
     participant_ids: list[str] = Field(default_factory=list)
+
+    @field_validator('event_date', mode='before')
+    @classmethod
+    def parse_event_date(cls, value):
+        return _event_datetime(value)
 
     @model_validator(mode='after')
     def _check_honoree(self):
@@ -32,11 +49,16 @@ class EventCreate(BaseModel):
 class EventUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = None
-    event_date: date | None = None
+    event_date: datetime | None = None
     location: str | None = Field(default=None, max_length=255)
     event_type: EventType | None = None
     honoree_id: str | None = None
     cover_image: str | None = Field(default=None, max_length=255)
+
+    @field_validator('event_date', mode='before')
+    @classmethod
+    def parse_event_date(cls, value):
+        return _event_datetime(value)
 
     @model_validator(mode='after')
     def _check_partial_honoree(self):

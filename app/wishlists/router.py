@@ -42,6 +42,52 @@ def date_value(value: Any) -> str | None:
     return str(value) if value is not None else None
 
 
+def wishlist_visibility(item: dict) -> str:
+    value = str(item.get('visibility') or '').strip().lower()
+    if value in {'public', 'friends', 'private'}:
+        return value
+    legacy = item.get('is_public')
+    if isinstance(legacy, str):
+        return 'public' if legacy.lower() in {'1', 'true', 'yes', 'public'} else 'private'
+    if legacy is not None:
+        return 'public' if bool(legacy) else 'private'
+    return 'public'
+
+
+def wishlist_emoji(item: dict) -> str:
+    # У схемі дипломки ярлик списку зберігається у cover_image. Старе emoji
+    # лишається як fallback, щоб не ламати вже створені записи.
+    value = item.get('cover_image') or item.get('emoji') or '🎁'
+    return str(value).strip() or '🎁'
+
+
+def wishlist_data(item: dict, items: list[dict] | None = None) -> WishlistData:
+    item_rows = items or []
+    visibility = wishlist_visibility(item)
+    return WishlistData(
+        id=str(item['id']),
+        title=item.get('title') or 'Без назви',
+        emoji=wishlist_emoji(item),
+        visibility=visibility,
+        is_public=visibility == 'public',
+        date_created=date_value(
+            item.get(settings.directus_wishes_created_field)
+            or item.get('created_at')
+            or item.get('date_created')
+        ),
+        items_count=len(item_rows),
+        available_count=sum(1 for row in item_rows if (row.get('status') or 'available') == 'available'),
+        reserved_count=sum(1 for row in item_rows if row.get('status') == 'reserved'),
+        preview_items=[{
+            'id': str(row['id']),
+            'title': row.get('title') or 'Без назви',
+            'image_url': row.get('image_url'),
+            'price': row.get('price'),
+            'status': row.get('status') or 'available',
+        } for row in item_rows[:4]],
+    )
+
+
 def item_data(item: dict) -> WishItemData:
     return WishItemData(
         id=str(item['id']),
@@ -50,14 +96,45 @@ def item_data(item: dict) -> WishItemData:
         url=item.get('url'),
         price=item.get('price'),
         image_url=item.get('image_url'),
-        notes=item.get('notes'),
+        notes=item.get('notes') or item.get('description'),
         status=item.get('status') or 'available',
-        date_created=date_value(item.get('date_created')),
+        date_created=date_value(item.get('date_created') or item.get('created_at')),
     )
 
 
 def directus_error(exc: DirectusError) -> HTTPException:
     return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+
+def is_schema_mismatch(exc: DirectusError) -> bool:
+    text = str(exc).lower()
+    return any(token in text for token in ('field', 'column', 'does not exist', 'unknown'))
+
+
+def create_payload(payload: WishlistCreate, user_id: str, legacy: bool = False) -> dict:
+    base = {
+        settings.directus_wishes_owner_field: user_id,
+        'title': payload.title,
+    }
+    if legacy:
+        base.update({'emoji': payload.emoji, 'is_public': payload.visibility == 'public'})
+    else:
+        base.update({'cover_image': payload.emoji, 'visibility': payload.visibility})
+    return base
+
+
+def update_payload(payload: WishlistUpdate, *, legacy: bool) -> dict:
+    supplied = payload.model_fields_set
+    data: dict[str, Any] = {}
+    if 'title' in supplied:
+        data['title'] = payload.title
+    if 'emoji' in supplied:
+        data['emoji' if legacy else 'cover_image'] = payload.emoji
+    if 'visibility' in supplied:
+        data['is_public' if legacy else 'visibility'] = (
+            payload.visibility == 'public' if legacy else payload.visibility
+        )
+    return data
 
 
 async def get_owned_list(list_id: str, user_id: str) -> dict:
@@ -80,47 +157,45 @@ async def get_owned_item(item_id: str, user_id: str) -> tuple[dict, dict]:
     return item, wishlist
 
 
+async def list_items(list_id: str) -> list[dict]:
+    client = get_directus()
+    for sort_field in ('date_created', 'created_at'):
+        try:
+            return await client.get_items(
+                settings.directus_wish_items_collection,
+                filter_={'wishlist_id': {'_eq': list_id}},
+                sort=[f'-{sort_field}'],
+            )
+        except DirectusError as exc:
+            if not is_schema_mismatch(exc):
+                raise
+    return await client.get_items(
+        settings.directus_wish_items_collection,
+        filter_={'wishlist_id': {'_eq': list_id}},
+    )
+
+
 @router.get('', response_model=list[WishlistData])
 async def get_my_wishlists(user_id: str = Depends(current_user_id)) -> list[WishlistData]:
     client = get_directus()
     try:
-        wishlists = await client.get_items(
-            settings.directus_wishes_collection,
-            filter_={settings.directus_wishes_owner_field: {'_eq': user_id}},
-            sort=[f'-{settings.directus_wishes_created_field}'],
-        )
-
+        try:
+            wishlists = await client.get_items(
+                settings.directus_wishes_collection,
+                filter_={settings.directus_wishes_owner_field: {'_eq': user_id}},
+                sort=[f'-{settings.directus_wishes_created_field}'],
+            )
+        except DirectusError as exc:
+            if not is_schema_mismatch(exc):
+                raise
+            wishlists = await client.get_items(
+                settings.directus_wishes_collection,
+                filter_={settings.directus_wishes_owner_field: {'_eq': user_id}},
+            )
         result: list[WishlistData] = []
         for wishlist in wishlists:
-            list_id = str(wishlist['id'])
-            items = await client.get_items(
-                settings.directus_wish_items_collection,
-                filter_={'wishlist_id': {'_eq': list_id}},
-                sort=['-date_created'],
-            )
-            available = sum(1 for item in items if (item.get('status') or 'available') == 'available')
-            reserved = sum(1 for item in items if item.get('status') == 'reserved')
-            preview = [
-                {
-                    'id': str(item['id']),
-                    'title': item.get('title') or 'Без назви',
-                    'image_url': item.get('image_url'),
-                    'price': item.get('price'),
-                    'status': item.get('status') or 'available',
-                }
-                for item in items[:4]
-            ]
-            result.append(WishlistData(
-                id=list_id,
-                title=wishlist.get('title') or 'Без назви',
-                emoji=wishlist.get('emoji') or '🎁',
-                is_public=bool(wishlist.get('is_public', True)),
-                date_created=date_value(wishlist.get(settings.directus_wishes_created_field)),
-                items_count=len(items),
-                available_count=available,
-                reserved_count=reserved,
-                preview_items=preview,
-            ))
+            items = await list_items(str(wishlist['id']))
+            result.append(wishlist_data(wishlist, items))
         return result
     except DirectusError as exc:
         raise directus_error(exc) from exc
@@ -131,17 +206,21 @@ async def create_wishlist(
     payload: WishlistCreate,
     user_id: str = Depends(current_user_id),
 ) -> WishlistData:
+    client = get_directus()
     try:
-        data = payload.model_dump(mode='json')
-        data[settings.directus_wishes_owner_field] = user_id
-        created = await get_directus().create_item(settings.directus_wishes_collection, data)
-        return WishlistData(
-            id=str(created['id']),
-            title=created.get('title') or payload.title,
-            emoji=created.get('emoji') or payload.emoji,
-            is_public=bool(created.get('is_public', payload.is_public)),
-            date_created=date_value(created.get(settings.directus_wishes_created_field)),
-        )
+        try:
+            created = await client.create_item(
+                settings.directus_wishes_collection,
+                create_payload(payload, user_id, legacy=False),
+            )
+        except DirectusError as exc:
+            if not is_schema_mismatch(exc):
+                raise
+            created = await client.create_item(
+                settings.directus_wishes_collection,
+                create_payload(payload, user_id, legacy=True),
+            )
+        return wishlist_data(created)
     except DirectusError as exc:
         raise directus_error(exc) from exc
 
@@ -152,32 +231,26 @@ async def update_wishlist(
     payload: WishlistUpdate,
     user_id: str = Depends(current_user_id),
 ) -> WishlistData:
+    client = get_directus()
     try:
         current = await get_owned_list(list_id, user_id)
-        update = payload.model_dump(mode='json', exclude_unset=True)
-        updated = await get_directus().update_item(settings.directus_wishes_collection, list_id, update) if update else current
-        items = await get_directus().get_items(
-            settings.directus_wish_items_collection,
-            filter_={'wishlist_id': {'_eq': list_id}},
-            sort=['-date_created'],
-        )
-        return WishlistData(
-            id=str(updated['id']),
-            title=updated.get('title') or current.get('title') or 'Без назви',
-            emoji=updated.get('emoji') or current.get('emoji') or '🎁',
-            is_public=bool(updated.get('is_public', current.get('is_public', True))),
-            date_created=date_value(updated.get(settings.directus_wishes_created_field) or current.get(settings.directus_wishes_created_field)),
-            items_count=len(items),
-            available_count=sum(1 for item in items if (item.get('status') or 'available') == 'available'),
-            reserved_count=sum(1 for item in items if item.get('status') == 'reserved'),
-            preview_items=[{
-                'id': str(item['id']),
-                'title': item.get('title') or 'Без назви',
-                'image_url': item.get('image_url'),
-                'price': item.get('price'),
-                'status': item.get('status') or 'available',
-            } for item in items[:4]],
-        )
+        uses_legacy = 'visibility' not in current and 'cover_image' not in current
+        update = update_payload(payload, legacy=uses_legacy)
+        try:
+            updated = await client.update_item(
+                settings.directus_wishes_collection, list_id, update
+            ) if update else current
+        except DirectusError as exc:
+            if not is_schema_mismatch(exc):
+                raise
+            # Дозволяє оновити стару інсталяцію з emoji/is_public і нову зі
+            # схемою дипломки без ручного переписування даних.
+            updated = await client.update_item(
+                settings.directus_wishes_collection,
+                list_id,
+                update_payload(payload, legacy=not uses_legacy),
+            )
+        return wishlist_data(updated, await list_items(list_id))
     except DirectusError as exc:
         raise directus_error(exc) from exc
 
@@ -189,11 +262,7 @@ async def delete_wishlist(
 ) -> Response:
     try:
         await get_owned_list(list_id, user_id)
-        items = await get_directus().get_items(
-            settings.directus_wish_items_collection,
-            filter_={'wishlist_id': {'_eq': list_id}},
-        )
-        for item in items:
+        for item in await list_items(list_id):
             await get_directus().delete_item(settings.directus_wish_items_collection, item['id'])
         await get_directus().delete_item(settings.directus_wishes_collection, list_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -208,12 +277,7 @@ async def get_wishlist_items(
 ) -> list[WishItemData]:
     try:
         await get_owned_list(list_id, user_id)
-        items = await get_directus().get_items(
-            settings.directus_wish_items_collection,
-            filter_={'wishlist_id': {'_eq': list_id}},
-            sort=['-date_created'],
-        )
-        return [item_data(item) for item in items]
+        return [item_data(item) for item in await list_items(list_id)]
     except DirectusError as exc:
         raise directus_error(exc) from exc
 
@@ -244,7 +308,9 @@ async def update_wishlist_item(
     try:
         current, _ = await get_owned_item(item_id, user_id)
         update = payload.model_dump(mode='json', exclude_unset=True)
-        updated = await get_directus().update_item(settings.directus_wish_items_collection, item_id, update) if update else current
+        updated = await get_directus().update_item(
+            settings.directus_wish_items_collection, item_id, update
+        ) if update else current
         return item_data(updated)
     except DirectusError as exc:
         raise directus_error(exc) from exc

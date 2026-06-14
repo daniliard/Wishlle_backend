@@ -4,6 +4,7 @@
 каталог і додають товари до власних списків побажань.
 """
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -34,6 +35,58 @@ def _to_item(row: dict) -> CatalogItemData:
         is_featured=bool(row.get('is_featured', False)),
         sort_order=int(row.get('sort_order') or 0),
     )
+
+
+def _normalized_url(value: Any) -> str:
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    try:
+        parsed = urlsplit(text)
+        # UTM та fragment не повинні дозволяти додати той самий товар вдруге.
+        query = '&'.join(
+            part for part in parsed.query.split('&')
+            if part and not part.lower().startswith(('utm_', 'gclid=', 'fbclid='))
+        )
+        return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip('/'), query, ''))
+    except ValueError:
+        return text.rstrip('/').lower()
+
+
+def _schema_mismatch(exc: DirectusError) -> bool:
+    text = str(exc).lower()
+    return any(token in text for token in ('field', 'column', 'does not exist', 'unknown'))
+
+
+async def _existing_catalog_item(wishlist_id: str, item_id: str, product_url: str | None) -> dict | None:
+    client = get_directus()
+    try:
+        rows = await client.get_items(
+            settings.directus_wish_items_collection,
+            fields=['id', 'catalog_item_id', 'url'],
+            filter_={'_and': [
+                {'wishlist_id': {'_eq': wishlist_id}},
+                {'catalog_item_id': {'_eq': item_id}},
+            ]},
+            limit=1,
+        )
+        if rows:
+            return rows[0]
+    except DirectusError as exc:
+        if not _schema_mismatch(exc):
+            raise
+
+    # Fallback для старої інсталяції без catalog_item_id.
+    target_url = _normalized_url(product_url)
+    rows = await client.get_items(
+        settings.directus_wish_items_collection,
+        fields=['id', 'url'],
+        filter_={'wishlist_id': {'_eq': wishlist_id}},
+        limit=500,
+    )
+    if target_url:
+        return next((row for row in rows if _normalized_url(row.get('url')) == target_url), None)
+    return None
 
 
 @router.get('', response_model=list[CatalogItemData])
@@ -68,14 +121,13 @@ async def list_catalog(
             sort=['sort_order'],
             limit=limit,
         )
-        return [_to_item(r) for r in rows]
+        return [_to_item(row) for row in rows]
     except DirectusError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get('/categories', response_model=list[CatalogCategory])
 async def list_categories(user_id: str = Depends(current_user_id)) -> list[CatalogCategory]:
-    """Повертає категорії з кількістю товарів — для динамічного сайдбару."""
     client = get_directus()
     try:
         rows = await client.get_items(
@@ -84,11 +136,11 @@ async def list_categories(user_id: str = Depends(current_user_id)) -> list[Catal
             limit=500,
         )
         counts: dict[str, int] = {}
-        for r in rows:
-            cat = r.get('category')
-            if cat:
-                counts[cat] = counts.get(cat, 0) + 1
-        return [CatalogCategory(value=k, count=v) for k, v in sorted(counts.items())]
+        for row in rows:
+            category = row.get('category')
+            if category:
+                counts[category] = counts.get(category, 0) + 1
+        return [CatalogCategory(value=key, count=value) for key, value in sorted(counts.items())]
     except DirectusError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -99,22 +151,30 @@ async def add_catalog_item_to_list(
     payload: AddToListRequest,
     user_id: str = Depends(current_user_id),
 ) -> dict:
-    """Додає товар з каталогу до власного списку побажань користувача."""
+    """Копіює каталожний товар у власний список, але лише один раз."""
     client = get_directus()
     try:
-        # Каталожний товар
         catalog_item = await client.get_item(settings.directus_catalog_collection, item_id)
         if not catalog_item:
             raise HTTPException(status_code=404, detail='Товар не знайдено в каталозі.')
 
-        # Перевіряємо, що список належить користувачу
         wishlist = await client.get_item(settings.directus_wishes_collection, payload.wishlist_id)
         if not wishlist:
             raise HTTPException(status_code=404, detail='Список не знайдено.')
         if _rel(wishlist.get(settings.directus_wishes_owner_field)) != user_id:
             raise HTTPException(status_code=403, detail='Це не ваш список.')
 
-        created = await client.create_item(settings.directus_wish_items_collection, {
+        if await _existing_catalog_item(
+            payload.wishlist_id,
+            item_id,
+            catalog_item.get('product_url'),
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail='Цей товар уже є в обраному списку.',
+            )
+
+        base_data = {
             'wishlist_id': payload.wishlist_id,
             'title': catalog_item.get('title') or 'Товар',
             'url': catalog_item.get('product_url'),
@@ -122,7 +182,23 @@ async def add_catalog_item_to_list(
             'image_url': catalog_item.get('image_url'),
             'notes': catalog_item.get('description'),
             'status': 'available',
-        })
+        }
+        try:
+            created = await client.create_item(
+                settings.directus_wish_items_collection,
+                {
+                    **base_data,
+                    'source': 'catalog',
+                    'catalog_item_id': item_id,
+                },
+            )
+        except DirectusError as exc:
+            if not _schema_mismatch(exc):
+                raise
+            created = await client.create_item(
+                settings.directus_wish_items_collection,
+                base_data,
+            )
         return {'id': str(created['id']), 'wishlist_id': payload.wishlist_id}
     except DirectusError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

@@ -1,13 +1,24 @@
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+WishlistVisibility = Literal['public', 'friends', 'private']
 
 
 class WishlistCreate(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     emoji: str = Field(default='🎁', max_length=16)
-    is_public: bool = True
+    visibility: WishlistVisibility = 'public'
+    is_public: bool | None = Field(default=None, exclude=True)
+
+    @model_validator(mode='before')
+    @classmethod
+    def map_legacy_visibility(cls, values):
+        if isinstance(values, dict) and 'visibility' not in values and 'is_public' in values:
+            values = {**values, 'visibility': 'public' if values.get('is_public') else 'private'}
+        return values
 
     @field_validator('title')
     @classmethod
@@ -26,7 +37,15 @@ class WishlistCreate(BaseModel):
 class WishlistUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=120)
     emoji: str | None = Field(default=None, max_length=16)
-    is_public: bool | None = None
+    visibility: WishlistVisibility | None = None
+    is_public: bool | None = Field(default=None, exclude=True)
+
+    @model_validator(mode='before')
+    @classmethod
+    def map_legacy_visibility(cls, values):
+        if isinstance(values, dict) and 'visibility' not in values and 'is_public' in values:
+            values = {**values, 'visibility': 'public' if values.get('is_public') else 'private'}
+        return values
 
     @field_validator('title')
     @classmethod
@@ -50,6 +69,8 @@ class WishlistData(BaseModel):
     id: str
     title: str
     emoji: str = '🎁'
+    visibility: WishlistVisibility = 'public'
+    # Старе поле лишаємо у відповіді для сумісності з уже відкритими клієнтами.
     is_public: bool = True
     date_created: str | None = None
     items_count: int = 0
