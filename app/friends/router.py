@@ -59,10 +59,21 @@ def _visible_user(user: dict, *, added: bool = True) -> FriendUserData:
 
 
 def _list_visibility(item: dict) -> str:
-    value = str(item.get('visibility') or '').lower()
+    value = str(item.get('visibility') or '').strip().lower()
     if value in {'public', 'friends', 'private'}:
         return value
-    return 'public' if item.get('is_public', False) else 'private'
+
+    legacy = item.get('is_public')
+    if isinstance(legacy, bool):
+        return 'public' if legacy else 'private'
+    if legacy is not None:
+        normalized = str(legacy).strip().lower()
+        if normalized in {'1', 'true', 'yes', 'on'}:
+            return 'public'
+        if normalized in {'0', 'false', 'no', 'off'}:
+            return 'private'
+
+    return 'private'
 
 
 def _can_view_wishlist(item: dict, owner: dict, *, added: bool) -> bool:
@@ -122,21 +133,80 @@ async def _users_by_ids(ids: list[str]) -> dict[str, dict]:
     return {str(user['id']): user for user in users}
 
 
+async def _owner_wishlists(owner_id: str) -> list[dict]:
+    """Load one user's lists without requiring owner_id in the response."""
+    client = get_directus()
+    filter_ = {settings.directus_wishes_owner_field: {'_eq': owner_id}}
+
+    sort_candidates = [
+        settings.directus_wishes_created_field,
+        'created_at',
+        'date_created',
+    ]
+    tried: set[str] = set()
+    for field in sort_candidates:
+        if not field or field in tried:
+            continue
+        tried.add(field)
+        try:
+            return await client.get_items(
+                settings.directus_wishes_collection,
+                filter_=filter_,
+                sort=[f'-{field}'],
+            )
+        except DirectusError as exc:
+            lowered = str(exc).lower()
+            if not any(token in lowered for token in ('field', 'column', 'forbidden', 'permission')):
+                raise
+
+    rows = await client.get_items(
+        settings.directus_wishes_collection,
+        filter_=filter_,
+    )
+    rows.sort(
+        key=lambda item: str(
+            item.get(settings.directus_wishes_created_field)
+            or item.get('created_at')
+            or item.get('date_created')
+            or ''
+        ),
+        reverse=True,
+    )
+    return rows
+
+
+async def _wishlist_items(list_id: str) -> list[dict]:
+    client = get_directus()
+    filter_ = {'wishlist_id': {'_eq': list_id}}
+    for field in ('date_created', 'created_at'):
+        try:
+            return await client.get_items(
+                settings.directus_wish_items_collection,
+                filter_=filter_,
+                sort=[f'-{field}'],
+            )
+        except DirectusError as exc:
+            lowered = str(exc).lower()
+            if not any(token in lowered for token in ('field', 'column', 'forbidden', 'permission')):
+                raise
+    return await client.get_items(
+        settings.directus_wish_items_collection,
+        filter_=filter_,
+    )
+
+
 async def _accessible_lists_by_owner(owner_ids: list[str], users: dict[str, dict]) -> dict[str, list[dict]]:
     result: dict[str, list[dict]] = defaultdict(list)
-    if not owner_ids:
-        return result
-
-    lists = await get_directus().get_items(
-        settings.directus_wishes_collection,
-        filter_={settings.directus_wishes_owner_field: {'_in': owner_ids}},
-        sort=[f'-{settings.directus_wishes_created_field}'],
-    )
-    for item in lists:
-        owner_id = _relation_id(item.get(settings.directus_wishes_owner_field))
-        owner = users.get(owner_id or '')
-        if owner and _can_view_wishlist(item, owner, added=True):
-            result[owner_id].append(item)
+    for owner_id in owner_ids:
+        owner = users.get(owner_id)
+        if not owner:
+            continue
+        lists = await _owner_wishlists(owner_id)
+        result[owner_id] = [
+            item
+            for item in lists
+            if _can_view_wishlist(item, owner, added=True)
+        ]
     return result
 
 
@@ -354,11 +424,7 @@ async def friend_details(
         wishlists: list[FriendWishlistData] = []
         for wishlist in available.get(friend_id, []):
             list_id = str(wishlist['id'])
-            items = await client.get_items(
-                settings.directus_wish_items_collection,
-                filter_={'wishlist_id': {'_eq': list_id}},
-                sort=['-date_created'],
-            )
+            items = await _wishlist_items(list_id)
             wishlists.append(
                 FriendWishlistData(
                     id=list_id,
