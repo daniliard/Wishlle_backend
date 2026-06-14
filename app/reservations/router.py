@@ -127,10 +127,15 @@ async def view_friend_list(
             is_reserved = res is not None
             reserved_by_me = bool(res and _relation_id(res.get('reserved_by')) == user_id)
 
+            # Посилання приховуємо, якщо товар зарезервований кимось іншим
+            # (власник списку та сам резервувальник його бачать).
+            show_url = (not is_reserved) or reserved_by_me or is_owner
+            item_url = item.get('url') if show_url else None
+
             result_items.append(ReservedItemData(
                 id=iid,
                 title=item.get('title') or 'Без назви',
-                url=item.get('url'),
+                url=item_url,
                 price=item.get('price'),
                 image_url=item.get('image_url'),
                 notes=item.get('notes'),
