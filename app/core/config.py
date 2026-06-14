@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     )
 
     app_env: str = Field(default="development")
+    app_public_url: str = Field(default="https://wishlle-4isp.vercel.app")
 
     directus_url: str = Field(...)
     directus_token: str = Field(...)

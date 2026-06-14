@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.core.directus import close_directus
 from app.notifier.scheduler import scheduler, start_scheduler
 from app.parser.router import router as parser_router
+from app.profile.router import router as profile_router
 
 
 @asynccontextmanager
@@ -34,6 +35,7 @@ app.add_middleware(
 
 app.include_router(parser_router, prefix="/api", tags=["parser"])
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
+app.include_router(profile_router, prefix="/api/profile", tags=["profile"])
 
 
 @app.get("/health")

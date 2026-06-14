@@ -45,12 +45,14 @@ async def create_user_from_telegram(
 async def update_user_from_telegram(
     client: DirectusClient, user_id: str, tg_user: TelegramUser
 ) -> dict[str, Any]:
-    """Оновлює аватар та ім'я при повторному логіні."""
+    """Оновлює дані при повторному логіні, не перезаписуючи власний аватар."""
+    current = await client.get_item(settings.directus_users_collection, user_id) or {}
+    has_custom_avatar = '/backend/api/profile/avatar/' in str(current.get('avatar_url') or '')
     display_name = " ".join(filter(None, [tg_user.first_name, tg_user.last_name])) or None
     payload: dict[str, Any] = {}
     if display_name:
         payload["display_name"] = display_name
-    if tg_user.photo_url:
+    if tg_user.photo_url and not has_custom_avatar:
         payload["avatar_url"] = tg_user.photo_url
     if tg_user.username:
         payload["username"] = tg_user.username
@@ -80,11 +82,13 @@ async def create_user_from_google(
 async def update_user_from_google(
     client: DirectusClient, user_id: str, google_user: GoogleUser
 ) -> dict[str, Any]:
-    """Синхронізує ім'я та аватар Google при повторному вході."""
+    """Синхронізує Google-профіль, не перезаписуючи власний аватар."""
+    current = await client.get_item(settings.directus_users_collection, user_id) or {}
+    has_custom_avatar = '/backend/api/profile/avatar/' in str(current.get('avatar_url') or '')
     payload: dict[str, Any] = {}
     if google_user.name:
         payload["display_name"] = google_user.name
-    if google_user.picture:
+    if google_user.picture and not has_custom_avatar:
         payload["avatar_url"] = google_user.picture
     payload["auth_provider"] = "google"
 

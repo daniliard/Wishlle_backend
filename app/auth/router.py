@@ -38,6 +38,8 @@ def _to_user_data(user: dict) -> UserData:
         username=user.get("username"),
         avatar_url=user.get("avatar_url"),
         auth_provider=user.get("auth_provider"),
+        birth_date=user.get("birth_date"),
+        language=user.get("language") or "uk",
     )
 
 

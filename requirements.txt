@@ -9,3 +9,4 @@ aiogram>=3.13.0
 PyJWT[crypto]>=2.9.0
 google-auth>=2.35.0
 requests>=2.32.0
+python-multipart>=0.0.12

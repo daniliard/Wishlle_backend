@@ -1,3 +1,5 @@
+from datetime import date
+
 from pydantic import BaseModel
 
 
@@ -15,6 +17,8 @@ class UserData(BaseModel):
     username: str | None = None
     avatar_url: str | None = None
     auth_provider: str | None = None
+    birth_date: date | None = None
+    language: str | None = None
 
 
 class AuthResponse(BaseModel):

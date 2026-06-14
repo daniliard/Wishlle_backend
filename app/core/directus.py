@@ -98,6 +98,38 @@ class DirectusClient:
             "PATCH", f"/items/{collection}/{item_id}", json=payload
         )
 
+    async def upload_file(
+        self,
+        *,
+        filename: str,
+        content: bytes,
+        content_type: str,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        files = {"file": (filename, content, content_type)}
+        data = {"title": title} if title else None
+        try:
+            response = await self._client.post("/files", files=files, data=data)
+        except httpx.HTTPError as exc:
+            raise DirectusError(f"Directus file upload failed: {exc}") from exc
+        if response.status_code >= 400:
+            raise DirectusError(
+                f"Directus POST /files → {response.status_code}: {response.text}"
+            )
+        payload = response.json()
+        return payload.get("data", payload)
+
+    async def get_file(self, file_id: str) -> tuple[bytes, str | None]:
+        try:
+            response = await self._client.get(f"/assets/{file_id}")
+        except httpx.HTTPError as exc:
+            raise DirectusError(f"Directus asset request failed: {exc}") from exc
+        if response.status_code >= 400:
+            raise DirectusError(
+                f"Directus GET /assets/{file_id} → {response.status_code}: {response.text}"
+            )
+        return response.content, response.headers.get("content-type")
+
 
 _client: DirectusClient | None = None
 
