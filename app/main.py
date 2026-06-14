@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.core.directus import close_directus
 from app.catalog.router import router as catalog_router
 from app.notifications.router import router as notifications_router
+from app.media.router import router as media_router
 from app.events.router import router as events_router
 from app.friends.router import router as friends_router
 from app.notifier.scheduler import scheduler, start_scheduler
@@ -44,6 +45,7 @@ app.add_middleware(
 app.include_router(parser_router, prefix="/api", tags=["parser"])
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 app.include_router(profile_router, prefix="/api/profile", tags=["profile"])
+app.include_router(media_router, prefix="/api/media", tags=["media"])
 app.include_router(friends_router, prefix="/api/friends", tags=["friends"])
 app.include_router(wishlists_router, prefix="/api/wishlists", tags=["wishlists"])
 app.include_router(reservations_router, prefix="/api/reservations", tags=["reservations"])

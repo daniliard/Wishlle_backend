@@ -9,7 +9,7 @@ WishlistVisibility = Literal['public', 'friends', 'private']
 
 class WishlistCreate(BaseModel):
     title: str = Field(min_length=1, max_length=120)
-    emoji: str = Field(default='🎁', max_length=16)
+    emoji: str = Field(default='🎁', max_length=255)
     visibility: WishlistVisibility = 'public'
     is_public: bool | None = Field(default=None, exclude=True)
 
@@ -36,7 +36,7 @@ class WishlistCreate(BaseModel):
 
 class WishlistUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=120)
-    emoji: str | None = Field(default=None, max_length=16)
+    emoji: str | None = Field(default=None, max_length=255)
     visibility: WishlistVisibility | None = None
     is_public: bool | None = Field(default=None, exclude=True)
 
