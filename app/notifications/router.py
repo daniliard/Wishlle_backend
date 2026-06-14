@@ -5,7 +5,9 @@ recipient_id, type, related_id, sent_at, delivered, error_message.
 Сам запис friend_request одночасно є pending-заявкою; після прийняття або
 відхилення він видаляється через API модуля friends.
 """
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
@@ -39,6 +41,59 @@ def _name(user: dict | None, language: str) -> str:
     )
 
 
+def _parse_local_date(raw: Any) -> datetime | None:
+    if not raw:
+        return None
+    text = str(raw).strip()
+    try:
+        value = datetime.fromisoformat(text.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    tz = ZoneInfo(settings.notifier_timezone)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=tz)
+    else:
+        value = value.astimezone(tz)
+    return value
+
+
+def _reminder_body(event: dict, row: dict, language: str) -> str:
+    title = event.get(settings.directus_events_title_field) or (
+        'Event' if language == 'en' else 'Подія'
+    )
+    event_dt = _parse_local_date(event.get(settings.directus_events_date_field))
+    sent_dt = _parse_local_date(row.get('sent_at') or row.get('date_created'))
+    days_left = None
+    if event_dt and sent_dt:
+        days_left = (event_dt.date() - sent_dt.date()).days
+
+    if language == 'en':
+        when = (
+            'today' if days_left == 0 else
+            'tomorrow' if days_left == 1 else
+            f'in {days_left} days' if days_left is not None and days_left > 1 else
+            'soon'
+        )
+        body = f'The event “{title}” is {when}.'
+        if event_dt:
+            body += f" {event_dt.strftime('%d.%m.%Y')}"
+    else:
+        when = (
+            'сьогодні' if days_left == 0 else
+            'завтра' if days_left == 1 else
+            f'через {days_left} дн.' if days_left is not None and days_left > 1 else
+            'незабаром'
+        )
+        body = f'Подія «{title}» — {when}.'
+        if event_dt:
+            body += f" {event_dt.strftime('%d.%m.%Y')}"
+
+    location = event.get('location')
+    if location:
+        body += f' · {location}'
+    return body
+
+
 async def _language(user_id: str) -> str:
     user = await get_directus().get_item(
         settings.directus_users_collection,
@@ -66,18 +121,20 @@ async def _enrich(rows: list[dict], language: str) -> list[NotificationData]:
         elif notif_type in ('friend_request', 'friend_accepted'):
             user_ids.add(related_id)
 
-    events: dict[str, str] = {}
+    events: dict[str, dict] = {}
     if event_ids:
         try:
             event_rows = await client.get_items(
                 settings.directus_events_collection,
-                fields=['id', settings.directus_events_title_field],
+                fields=[
+                    'id',
+                    settings.directus_events_title_field,
+                    settings.directus_events_date_field,
+                    'location',
+                ],
                 filter_={'id': {'_in': list(event_ids)}},
             )
-            events = {
-                str(row['id']): row.get(settings.directus_events_title_field) or ''
-                for row in event_rows
-            }
+            events = {str(row['id']): row for row in event_rows}
         except DirectusError:
             pass
 
@@ -145,19 +202,14 @@ async def _enrich(rows: list[dict], language: str) -> list[NotificationData]:
                 else f'{actor} прийняв(ла) твою заявку в друзі.'
             )
         elif notif_type in ('event_invite', 'event_reminder') and related_id and events.get(related_id):
-            event_title = events[related_id]
-            if language == 'en':
-                body = (
-                    f'You were invited to “{event_title}”.'
-                    if notif_type == 'event_invite'
-                    else f'The event “{event_title}” is coming up.'
-                )
+            event = events[related_id]
+            event_title = event.get(settings.directus_events_title_field) or ''
+            if notif_type == 'event_reminder':
+                body = _reminder_body(event, row, language)
+            elif language == 'en':
+                body = f'You were invited to “{event_title}”.'
             else:
-                body = (
-                    f'Вас запросили на «{event_title}».'
-                    if notif_type == 'event_invite'
-                    else f'Наближається подія «{event_title}».'
-                )
+                body = f'Вас запросили на «{event_title}».'
         elif notif_type == 'reservation' and related_id and wishlists.get(related_id):
             list_title = wishlists[related_id]
             body = (

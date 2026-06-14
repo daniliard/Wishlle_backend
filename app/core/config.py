@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     parser_timeout_seconds: float = Field(default=10.0)
     parser_user_agent: str = Field(default="WishlleBot/1.0 (+https://wishlle.app)")
 
+    notifier_enabled: bool = Field(default=True)
+    notifier_run_on_startup: bool = Field(default=True)
     notifier_cron_hour: int = Field(default=9)
     notifier_cron_minute: int = Field(default=0)
     notifier_timezone: str = Field(default="Europe/Kyiv")

@@ -1,229 +1,353 @@
-import logging
-from datetime import date, datetime, timedelta, timezone
-from typing import Any
+"""Cron-нагадування про події Wishlle без зміни структури БД.
 
-from aiogram import Bot
-from aiogram.enums import ParseMode
+Використовуються тільки наявні поля:
+- events: id, owner_id, title, event_date, location;
+- event_participants: event_id, user_id, status;
+- users: id, telegram_id, language;
+- notifications: recipient_id, type, related_id, sent_at, delivered.
+
+Окреме поле ``days_before`` не потрібне. Від повторного надсилання в той
+самий день захищаємося за ``recipient_id + event_id + type + sent_at``.
+"""
+from __future__ import annotations
+
+import logging
+from collections import defaultdict
+from datetime import date, datetime, time, timezone
+from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.core.config import settings
 from app.core.directus import DirectusClient, DirectusError, get_directus
-
+from app.notifications.service import create_notification
 
 logger = logging.getLogger(__name__)
 
-
-def _days_until(target: date, today: date) -> int:
-    upcoming = target.replace(year=today.year)
-    if upcoming < today:
-        upcoming = upcoming.replace(year=today.year + 1)
-    return (upcoming - today).days
+REMINDER_TYPE = "event_reminder"
 
 
-def _format_event_message(title: str, days_left: int) -> str:
-    when = "сьогодні" if days_left == 0 else (
-        "завтра" if days_left == 1 else f"через {days_left} дн."
-    )
-    return (
-        f"🎁 Нагадування: <b>{title}</b> — {when}.\n"
-        f"Не забудь оновити свій вішлист на Wishlle!"
-    )
+def _rel(value: Any) -> str | None:
+    if isinstance(value, dict):
+        value = value.get("id")
+    return str(value) if value is not None else None
 
 
-def _format_wish_message(owner_name: str | None, wish_title: str) -> str:
-    who = owner_name or "Хтось"
-    return (
-        f"✨ <b>{who}</b> додав нове бажання у свій список: "
-        f"<i>{wish_title}</i>"
-    )
+def _parse_datetime(raw: Any, tz: ZoneInfo) -> tuple[datetime | None, bool]:
+    """Повертає локальний datetime та ознаку, чи був у значенні час."""
+    if not raw:
+        return None, False
+
+    if isinstance(raw, datetime):
+        value = raw
+        had_time = True
+    elif isinstance(raw, date):
+        value = datetime.combine(raw, time.min)
+        had_time = False
+    else:
+        text = str(raw).strip()
+        had_time = "T" in text or " " in text
+        try:
+            value = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                value = datetime.combine(date.fromisoformat(text[:10]), time.min)
+                had_time = False
+            except ValueError:
+                return None, False
+
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=tz)
+    else:
+        value = value.astimezone(tz)
+    return value, had_time
 
 
-def _parse_iso_date(raw: Any) -> date | None:
+def _parse_notification_date(raw: Any, tz: ZoneInfo) -> date | None:
     if not raw:
         return None
-    if isinstance(raw, date) and not isinstance(raw, datetime):
-        return raw
     try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date()
+        value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     except ValueError:
         return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(tz).date()
 
 
-async def _fetch_telegram_users(
+def _when_text(days_left: int, language: str) -> str:
+    if language == "en":
+        if days_left == 0:
+            return "today"
+        if days_left == 1:
+            return "tomorrow"
+        return f"in {days_left} days"
+
+    if days_left == 0:
+        return "сьогодні"
+    if days_left == 1:
+        return "завтра"
+    return f"через {days_left} дн."
+
+
+def _format_event_datetime(value: datetime, had_time: bool, language: str) -> str:
+    if language == "en":
+        base = value.strftime("%d.%m.%Y")
+        return f"{base} at {value.strftime('%H:%M')}" if had_time else base
+    base = value.strftime("%d.%m.%Y")
+    return f"{base} о {value.strftime('%H:%M')}" if had_time else base
+
+
+def _telegram_text(
+    *,
+    title: str,
+    event_dt: datetime,
+    had_time: bool,
+    days_left: int,
+    location: str | None,
+    language: str,
+) -> str:
+    when = _when_text(days_left, language)
+    date_text = _format_event_datetime(event_dt, had_time, language)
+
+    if language == "en":
+        lines = [
+            "<b>Event reminder 🗓️</b>",
+            f"<b>{title}</b> — {when}.",
+            f"📅 {date_text}",
+        ]
+        if location:
+            lines.append(f"📍 {location}")
+        lines.append(f'<a href="{settings.app_public_url}">Open Wishlle</a>')
+        return "\n".join(lines)
+
+    lines = [
+        "<b>Нагадування про подію 🗓️</b>",
+        f"<b>{title}</b> — {when}.",
+        f"📅 {date_text}",
+    ]
+    if location:
+        lines.append(f"📍 {location}")
+    lines.append(f'<a href="{settings.app_public_url}">Відкрити Wishlle</a>')
+    return "\n".join(lines)
+
+
+async def _already_sent_today(
     client: DirectusClient,
-) -> dict[Any, dict[str, Any]]:
-    tg_field = settings.directus_users_telegram_field
-    users = await client.get_items(
-        settings.directus_users_collection,
-        fields=["id", tg_field, "display_name", "username"],
-        filter_={tg_field: {"_nnull": True}},
-    )
-    return {u["id"]: u for u in users if u.get(tg_field)}
-
-
-async def _was_already_sent(
-    client: DirectusClient,
-    user_id: Any,
-    event_id: Any,
-    days_before: int,
+    *,
+    recipient_id: str,
+    event_id: str,
+    local_today: date,
+    tz: ZoneInfo,
 ) -> bool:
-    items = await client.get_items(
+    rows = await client.get_items(
         settings.directus_notifications_collection,
-        fields=["id"],
+        fields=["id", "sent_at", "date_created"],
         filter_={
             "_and": [
-                {settings.directus_notifications_user_field: {"_eq": user_id}},
+                {settings.directus_notifications_user_field: {"_eq": recipient_id}},
+                {settings.directus_notifications_days_field: {"_eq": REMINDER_TYPE}},
                 {settings.directus_notifications_event_field: {"_eq": event_id}},
-                {settings.directus_notifications_days_field: {"_eq": days_before}},
             ]
         },
-        limit=1,
+        limit=100,
     )
-    return bool(items)
+    return any(
+        _parse_notification_date(row.get("sent_at") or row.get("date_created"), tz)
+        == local_today
+        for row in rows
+    )
 
 
-async def _mark_as_sent(
+async def _load_due_events(
     client: DirectusClient,
-    user_id: Any,
-    event_id: Any,
-    days_before: int,
-) -> None:
-    await client.create_item(
-        settings.directus_notifications_collection,
-        {
-            settings.directus_notifications_user_field: user_id,
-            settings.directus_notifications_event_field: event_id,
-            settings.directus_notifications_days_field: days_before,
-        },
-    )
-
-
-async def collect_due_events(
-    client: DirectusClient, today: date
-) -> list[tuple[dict[str, Any], dict[str, Any], int]]:
-    reminder_days = set(settings.notifier_reminder_days)
-    title_field = settings.directus_events_title_field
-    date_field = settings.directus_events_date_field
-    owner_field = settings.directus_events_owner_field
+    *,
+    now: datetime,
+) -> list[tuple[dict[str, Any], datetime, bool, int]]:
+    reminder_days = {int(value) for value in settings.notifier_reminder_days}
+    if not reminder_days:
+        return []
 
     events = await client.get_items(
         settings.directus_events_collection,
-        fields=["id", title_field, date_field, owner_field],
+        fields=[
+            "id",
+            settings.directus_events_owner_field,
+            settings.directus_events_title_field,
+            settings.directus_events_date_field,
+            "location",
+        ],
     )
 
-    users_by_id = await _fetch_telegram_users(client)
-
-    due: list[tuple[dict[str, Any], dict[str, Any], int]] = []
+    due: list[tuple[dict[str, Any], datetime, bool, int]] = []
     for event in events:
-        event_date = _parse_iso_date(event.get(date_field))
-        if event_date is None:
+        event_dt, had_time = _parse_datetime(
+            event.get(settings.directus_events_date_field), now.tzinfo  # type: ignore[arg-type]
+        )
+        if event_dt is None:
             continue
 
-        owner_ref = event.get(owner_field)
-        owner_id = owner_ref.get("id") if isinstance(owner_ref, dict) else owner_ref
-        user = users_by_id.get(owner_id)
-        if user is None:
+        days_left = (event_dt.date() - now.date()).days
+        if days_left not in reminder_days or days_left < 0:
             continue
-        days_left = _days_until(event_date, today)
-        if days_left in reminder_days:
-            due.append((user, event, days_left))
+        if days_left == 0 and had_time and event_dt < now:
+            continue
+        due.append((event, event_dt, had_time, days_left))
     return due
 
 
-async def collect_recent_wishes(
-    client: DirectusClient, now: datetime
-) -> list[tuple[dict[str, Any], str]]:
-    if not settings.notifier_wishes_enabled:
-        return []
+async def _accepted_participants_by_event(
+    client: DirectusClient,
+    event_ids: list[str],
+) -> dict[str, set[str]]:
+    if not event_ids:
+        return {}
 
-    title_field = settings.directus_wishes_title_field
-    owner_field = settings.directus_wishes_owner_field
-    created_field = settings.directus_wishes_created_field
-    threshold = now - timedelta(hours=settings.notifier_wishes_lookback_hours)
-
-    wishes = await client.get_items(
-        settings.directus_wishes_collection,
-        fields=["id", title_field, owner_field, created_field],
-        filter_={created_field: {"_gte": threshold.isoformat()}},
-        sort=[f"-{created_field}"],
+    rows = await client.get_items(
+        settings.directus_event_participants_collection,
+        fields=["event_id", "user_id", "status"],
+        filter_={
+            "_and": [
+                {"event_id": {"_in": event_ids}},
+                {"status": {"_eq": "accepted"}},
+            ]
+        },
     )
 
-    users_by_id = await _fetch_telegram_users(client)
-
-    result: list[tuple[dict[str, Any], str]] = []
-    for wish in wishes:
-        owner_ref = wish.get(owner_field)
-        owner_id = owner_ref.get("id") if isinstance(owner_ref, dict) else owner_ref
-        user = users_by_id.get(owner_id)
-        if user is None:
-            continue
-        result.append((user, wish.get(title_field) or "Без назви"))
+    result: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        event_id = _rel(row.get("event_id"))
+        user_id = _rel(row.get("user_id"))
+        if event_id and user_id:
+            result[event_id].add(user_id)
     return result
 
 
-async def send_daily_reminders() -> dict[str, int]:
+async def _users_by_ids(
+    client: DirectusClient,
+    user_ids: set[str],
+) -> dict[str, dict[str, Any]]:
+    if not user_ids:
+        return {}
+    rows = await client.get_items(
+        settings.directus_users_collection,
+        fields=[
+            "id",
+            settings.directus_users_telegram_field,
+            settings.directus_users_locale_field,
+            "display_name",
+            "username",
+        ],
+        filter_={"id": {"_in": list(user_ids)}},
+    )
+    return {str(row["id"]): row for row in rows}
+
+
+async def send_due_event_reminders(
+    *,
+    only_user_id: str | None = None,
+) -> dict[str, int]:
+    """Створює in-app і Telegram-нагадування для власників та учасників.
+
+    Pending/declined учасники нагадування не отримують. Для ручного тесту
+    ``only_user_id`` обмежує відправку поточним користувачем.
+    """
     client = get_directus()
-    today = date.today()
-    now = datetime.now(tz=timezone.utc)
-    title_field = settings.directus_events_title_field
-    bot = Bot(token=settings.telegram_bot_token)
+    tz = ZoneInfo(settings.notifier_timezone)
+    now = datetime.now(tz)
 
-    sent_events = 0
-    sent_wishes = 0
+    due_events = await _load_due_events(client, now=now)
+    event_ids = [str(event["id"]) for event, *_ in due_events]
+    accepted = await _accepted_participants_by_event(client, event_ids)
 
-    try:
-        try:
-            due_events = await collect_due_events(client, today)
-        except DirectusError as exc:
-            logger.exception("Failed to fetch events: %s", exc)
-            due_events = []
+    recipients_by_event: dict[str, set[str]] = {}
+    all_recipient_ids: set[str] = set()
+    for event, *_ in due_events:
+        event_id = str(event["id"])
+        recipients = set(accepted.get(event_id, set()))
+        owner_id = _rel(event.get(settings.directus_events_owner_field))
+        if owner_id:
+            recipients.add(owner_id)
+        if only_user_id is not None:
+            recipients = {only_user_id} if only_user_id in recipients else set()
+        recipients_by_event[event_id] = recipients
+        all_recipient_ids.update(recipients)
 
-        for user, event, days_left in due_events:
-            chat_id = user[settings.directus_users_telegram_field]
-            user_id = user["id"]
-            event_id = event["id"]
+    users = await _users_by_ids(client, all_recipient_ids)
 
+    created_count = 0
+    telegram_candidates = 0
+    skipped_count = 0
+    failed_count = 0
+
+    for event, event_dt, had_time, days_left in due_events:
+        event_id = str(event["id"])
+        title = str(event.get(settings.directus_events_title_field) or "Подія")
+        location = event.get("location")
+
+        for recipient_id in recipients_by_event.get(event_id, set()):
             try:
-                if await _was_already_sent(client, user_id, event_id, days_left):
+                if await _already_sent_today(
+                    client,
+                    recipient_id=recipient_id,
+                    event_id=event_id,
+                    local_today=now.date(),
+                    tz=tz,
+                ):
+                    skipped_count += 1
                     continue
-            except DirectusError as exc:
-                logger.warning("Notifications check failed: %s", exc)
-                continue
 
-            title = event.get(title_field) or "Без назви"
-            try:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=_format_event_message(title, days_left),
-                    parse_mode=ParseMode.HTML,
+                user = users.get(recipient_id, {})
+                language = (
+                    "en"
+                    if user.get(settings.directus_users_locale_field) == "en"
+                    else "uk"
                 )
-            except Exception as exc:
-                logger.warning("Failed to send event to %s: %s", chat_id, exc)
-                continue
-
-            try:
-                await _mark_as_sent(client, user_id, event_id, days_left)
-                sent_events += 1
-            except DirectusError as exc:
-                logger.warning("Failed to mark notification: %s", exc)
-
-        try:
-            wishes = await collect_recent_wishes(client, now)
-        except DirectusError as exc:
-            logger.exception("Failed to fetch wishes: %s", exc)
-            wishes = []
-
-        for user, wish_title in wishes:
-            chat_id = user[settings.directus_users_telegram_field]
-            try:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=_format_wish_message(user.get("display_name"), wish_title),
-                    parse_mode=ParseMode.HTML,
+                telegram_text = _telegram_text(
+                    title=title,
+                    event_dt=event_dt,
+                    had_time=had_time,
+                    days_left=days_left,
+                    location=str(location) if location else None,
+                    language=language,
                 )
-                sent_wishes += 1
-            except Exception as exc:
-                logger.warning("Failed to send wish to %s: %s", chat_id, exc)
-    finally:
-        await bot.session.close()
+                if user.get(settings.directus_users_telegram_field):
+                    telegram_candidates += 1
 
-    return {"events": sent_events, "wishes": sent_wishes}
+                await create_notification(
+                    recipient_id=recipient_id,
+                    notif_type=REMINDER_TYPE,
+                    related_id=event_id,
+                    telegram_text=telegram_text,
+                    send_telegram=True,
+                    required=True,
+                )
+                created_count += 1
+            except DirectusError as exc:
+                failed_count += 1
+                logger.warning(
+                    "Could not create reminder for user=%s event=%s: %s",
+                    recipient_id,
+                    event_id,
+                    exc,
+                )
+            except Exception as exc:  # noqa: BLE001
+                failed_count += 1
+                logger.exception(
+                    "Reminder failed for user=%s event=%s: %s",
+                    recipient_id,
+                    event_id,
+                    exc,
+                )
+
+    return {
+        "events_due": len(due_events),
+        "notifications_created": created_count,
+        "telegram_candidates": telegram_candidates,
+        "skipped_existing": skipped_count,
+        "failed": failed_count,
+    }
+
+
+# Старе ім'я залишено, щоб не ламати імпорти scheduler.
+async def send_daily_reminders() -> dict[str, int]:
+    return await send_due_event_reminders()

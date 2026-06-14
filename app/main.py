@@ -11,6 +11,7 @@ from app.notifications.router import router as notifications_router
 from app.events.router import router as events_router
 from app.friends.router import router as friends_router
 from app.notifier.scheduler import scheduler, start_scheduler
+from app.notifier.router import router as notifier_router
 from app.parser.router import router as parser_router
 from app.profile.router import router as profile_router
 from app.reservations.router import router as reservations_router
@@ -21,7 +22,8 @@ from app.wishlists.router import router as wishlists_router
 async def lifespan(app: FastAPI):
     start_scheduler()
     yield
-    scheduler.shutdown(wait=False)
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
     await close_directus()
 
 
@@ -48,6 +50,7 @@ app.include_router(reservations_router, prefix="/api/reservations", tags=["reser
 app.include_router(events_router, prefix="/api/events", tags=["events"])
 app.include_router(catalog_router, prefix="/api/catalog", tags=["catalog"])
 app.include_router(notifications_router, prefix="/api/notifications", tags=["notifications"])
+app.include_router(notifier_router, prefix="/api/reminders", tags=["reminders"])
 
 
 @app.get("/health")
