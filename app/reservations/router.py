@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.core.config import settings
 from app.core.directus import DirectusError, get_directus
+from app.notifications.service import create_notification
 from app.profile.router import current_user_id
 from app.reservations.schemas import (
     FriendListView,
@@ -202,6 +203,18 @@ async def reserve_item(
             payload.item_id,
             {'status': 'reserved'},
         )
+
+        # Сповіщення власнику списку (без розкриття хто саме зарезервував)
+        if owner_id and owner_id != user_id:
+            item_title = item.get('title') or 'твій подарунок'
+            await create_notification(
+                recipient_id=owner_id,
+                notif_type='reservation',
+                title='Подарунок зарезервовано 🎁',
+                body=f'Хтось зарезервував «{item_title}» з твого списку.',
+                related_id=wishlist_id,
+                data={'wishlist_id': wishlist_id, 'item_id': payload.item_id},
+            )
 
         return ReservationData(
             id=str(created['id']),

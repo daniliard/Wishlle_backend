@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.core.config import settings
 from app.core.directus import DirectusError, get_directus
+from app.notifications.service import create_notification
 from app.events.schemas import (
     EventCreate,
     EventData,
@@ -289,6 +290,19 @@ async def create_event(
         for row in participant_rows:
             await client.create_item(settings.directus_event_participants_collection, row)
 
+        # Сповіщення запрошеним (не honoree, бо він accepted автоматично)
+        event_title = created.get('title') or 'подію'
+        for row in participant_rows:
+            if row.get('role') == 'participant':
+                await create_notification(
+                    recipient_id=row['user_id'],
+                    notif_type='event_invite',
+                    title='Запрошення на подію 🎉',
+                    body=f'Вас запросили на «{event_title}».',
+                    related_id=event_id,
+                    data={'event_id': event_id},
+                )
+
         parts = await _event_participants(event_id)
         return _build_event_data(created, user_id, parts)
     except DirectusError as exc:
@@ -375,6 +389,14 @@ async def invite_participants(
                 'status': 'invited',
                 'role': 'participant',
             })
+            await create_notification(
+                recipient_id=pid,
+                notif_type='event_invite',
+                title='Запрошення на подію 🎉',
+                body=f'Вас запросили на «{event.get("title") or "подію"}».',
+                related_id=event_id,
+                data={'event_id': event_id},
+            )
 
         return await event_details(event_id, user_id)
     except DirectusError as exc:

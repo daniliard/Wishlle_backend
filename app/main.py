@@ -7,6 +7,7 @@ from app.auth.router import router as auth_router
 from app.core.config import settings
 from app.core.directus import close_directus
 from app.catalog.router import router as catalog_router
+from app.notifications.router import router as notifications_router
 from app.events.router import router as events_router
 from app.friends.router import router as friends_router
 from app.notifier.scheduler import scheduler, start_scheduler
@@ -46,6 +47,7 @@ app.include_router(wishlists_router, prefix="/api/wishlists", tags=["wishlists"]
 app.include_router(reservations_router, prefix="/api/reservations", tags=["reservations"])
 app.include_router(events_router, prefix="/api/events", tags=["events"])
 app.include_router(catalog_router, prefix="/api/catalog", tags=["catalog"])
+app.include_router(notifications_router, prefix="/api/notifications", tags=["notifications"])
 
 
 @app.get("/health")
