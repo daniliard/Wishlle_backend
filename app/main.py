@@ -3,20 +3,21 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.auth.router import router as auth_router
+from app.modules.auth.router import router as auth_router
 from app.core.config import settings
 from app.core.directus import close_directus
-from app.catalog.router import router as catalog_router
-from app.notifications.router import router as notifications_router
-from app.media.router import router as media_router
-from app.events.router import router as events_router
-from app.friends.router import router as friends_router
-from app.notifier.scheduler import scheduler, start_scheduler
-from app.notifier.router import router as notifier_router
-from app.parser.router import router as parser_router
-from app.profile.router import router as profile_router
-from app.reservations.router import router as reservations_router
-from app.wishlists.router import router as wishlists_router
+from app.modules.catalog.router import router as catalog_router
+from app.modules.notifications.router import router as notifications_router
+from app.modules.media.router import router as media_router
+from app.modules.events.router import router as events_router
+from app.modules.friends.router import router as friends_router
+from app.modules.notifier.scheduler import scheduler, start_scheduler
+from app.modules.notifier.router import router as notifier_router
+from app.modules.parser.router import router as parser_router
+from app.modules.profile.router import router as profile_router
+from app.modules.public.router import router as public_router
+from app.modules.reservations.router import router as reservations_router
+from app.modules.wishlists.router import router as wishlists_router
 
 
 @asynccontextmanager
@@ -53,6 +54,7 @@ app.include_router(events_router, prefix="/api/events", tags=["events"])
 app.include_router(catalog_router, prefix="/api/catalog", tags=["catalog"])
 app.include_router(notifications_router, prefix="/api/notifications", tags=["notifications"])
 app.include_router(notifier_router, prefix="/api/reminders", tags=["reminders"])
+app.include_router(public_router, prefix="/api/public", tags=["public"])
 
 
 @app.get("/health")
